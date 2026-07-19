@@ -10,8 +10,10 @@
 > out by their original domain + path.
 
 **Status: early implementation.** The keybag parser, two-stage PBKDF2 KDF, and RFC 3394
-AES key unwrap are in place and proven against known-answer vectors (milestone 1); the
-`Manifest.db` and per-file decrypt paths land next. The plan and full spec live in
+AES key unwrap are in place and proven against known-answer vectors (milestone 1).
+`Open`/`Unlock` now decrypt `Manifest.db` (streaming AES-CBC) and read its `Files` table
+via `List`/`Stat`/`DeviceInfo`, verified by a synthetic-backup round-trip (milestone 2).
+Per-file streaming decryption lands next. The plan and full spec live in
 [`CLAUDE.md`](CLAUDE.md).
 
 ## Build & test
