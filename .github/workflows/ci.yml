@@ -1,0 +1,28 @@
+name: ci
+
+# The same gate as local dev — CI calls only `make` targets (no logic here), and the
+# gate runs inside the pinned Go toolchain container the Makefile builds from
+# deploy/Dockerfile. Running from a fresh checkout is what proves the fresh-clone
+# property. The toolchain version is pinned in versions.env.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gates:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Docker (with buildkit) is preinstalled on ubuntu-latest; the Makefile autodetects
+      # it and runs the gate in its toolchain container. No language setup needed.
+      - name: Gate ladder
+        run: make gates

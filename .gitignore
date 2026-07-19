@@ -1,0 +1,21 @@
+# NOTE: a '#' only starts a comment at column 0; every rule is on its own line.
+
+# --- Go build outputs / test artifacts ---
+/dist/
+*.test
+*.out
+*.prof
+
+# --- Real-backup material: NEVER committed (personal data; ladder rung 4 is env-driven) ---
+# The real-backup differential test reads a path from an env var; nothing local is tracked.
+/local/
+/testdata/real/
+
+# --- Claude Code machine-local settings ---
+/.claude/settings.local.json
+
+# --- Editor / OS noise ---
+.DS_Store
+*.swp
+# macOS AppleDouble sidecars (leak into tar/zip; never want them tracked).
+._*
