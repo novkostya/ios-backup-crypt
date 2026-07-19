@@ -1,6 +1,9 @@
 module github.com/novkostya/ios-backup-crypt
 
-go 1.26.5
+// Minimum Go for consumers. 1.25 is the true floor: modernc.org/sqlite requires it, and
+// this library only uses features available by 1.24 (crypto/pbkdf2, iter). The gates
+// build with a newer pinned toolchain (see versions.env), but consumers need only 1.25+.
+go 1.25.0
 
 require (
 	howett.net/plist v1.0.1
