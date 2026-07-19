@@ -1,0 +1,87 @@
+package iosbackup
+
+import (
+	"bytes"
+	"errors"
+	"io"
+	"strings"
+	"testing"
+
+	"github.com/novkostya/ios-backup-crypt/internal/builder"
+)
+
+// TestDecryptFileRoundTrip is the milestone-3 proof: files written by the builder decrypt
+// back byte-for-byte, across sizes that exercise padding and cross-chunk streaming.
+func TestDecryptFileRoundTrip(t *testing.T) {
+	small := []byte("hello, world")           // 12 bytes: not block-aligned
+	aligned := bytes.Repeat([]byte{0x5A}, 64) // exact multiple of the block size
+	big := make([]byte, 200000)               // larger than the 64 KiB streaming chunk
+	for i := range big {
+		big[i] = byte(i * 131 % 251)
+	}
+	empty := []byte{} // zero-length file (still gets a full padding block)
+
+	dir := t.TempDir()
+	res, err := builder.Build(dir, builder.Spec{
+		Password: "test",
+		Files: []builder.File{
+			{Domain: "HomeDomain", RelativePath: "small.txt", Flags: 1, Data: small},
+			{Domain: "HomeDomain", RelativePath: "aligned.bin", Flags: 1, Data: aligned},
+			{Domain: "HomeDomain", RelativePath: "big.bin", Flags: 1, Data: big},
+			{Domain: "HomeDomain", RelativePath: "empty.dat", Flags: 1, Data: empty},
+			{Domain: "HomeDomain", RelativePath: "Documents", Flags: 2}, // directory: no Data
+		},
+	})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+
+	b, err := Open(dir)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = b.Close() })
+	if err := b.Unlock("test"); err != nil {
+		t.Fatalf("Unlock: %v", err)
+	}
+
+	for i, want := range [][]byte{small, aligned, big, empty} {
+		id := res.Files[i].FileID
+		var buf bytes.Buffer
+		if err := b.DecryptFile(id, &buf); err != nil {
+			t.Fatalf("DecryptFile(%s, %q): %v", id, res.Files[i].RelativePath, err)
+		}
+		if !bytes.Equal(buf.Bytes(), want) {
+			t.Fatalf("%q: decrypted %d bytes, want %d (mismatch)", res.Files[i].RelativePath, buf.Len(), len(want))
+		}
+	}
+
+	// A directory has no encryption key.
+	dirID := res.Files[4].FileID
+	if err := b.DecryptFile(dirID, io.Discard); !errors.Is(err, ErrNotAFile) {
+		t.Fatalf("DecryptFile(dir): got %v, want ErrNotAFile", err)
+	}
+
+	// Unknown fileID.
+	if err := b.DecryptFile(strings.Repeat("a", 40), io.Discard); !errors.Is(err, ErrFileNotFound) {
+		t.Fatalf("DecryptFile(unknown): got %v, want ErrFileNotFound", err)
+	}
+}
+
+func TestDecryptFileLocked(t *testing.T) {
+	dir := t.TempDir()
+	res, err := builder.Build(dir, builder.Spec{
+		Files: []builder.File{{Domain: "HomeDomain", RelativePath: "a", Flags: 1, Data: []byte("x")}},
+	})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	b, err := Open(dir)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = b.Close() })
+	if err := b.DecryptFile(res.Files[0].FileID, io.Discard); !errors.Is(err, ErrLocked) {
+		t.Fatalf("DecryptFile before Unlock: got %v, want ErrLocked", err)
+	}
+}

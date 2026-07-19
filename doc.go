@@ -22,6 +22,7 @@
 // known-answer vectors before anything depends on it:
 //
 //   - internal/aeskw — RFC 3394 AES key wrap/unwrap (RFC 3394 §4 vectors).
+//   - internal/aescbc — streaming AES-CBC (NIST SP 800-38A vector).
 //   - internal/keybag — keybag TLV parse + two-stage PBKDF2 KDF (RFC 6070 + SHA-256
 //     vectors) + class-key unwrap.
 //

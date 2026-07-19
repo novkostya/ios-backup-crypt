@@ -9,11 +9,13 @@
 > the key from the backup password, decrypts `Manifest.db`, and streams individual files
 > out by their original domain + path.
 
-**Status: early implementation.** The keybag parser, two-stage PBKDF2 KDF, and RFC 3394
-AES key unwrap are in place and proven against known-answer vectors (milestone 1).
-`Open`/`Unlock` now decrypt `Manifest.db` (streaming AES-CBC) and read its `Files` table
-via `List`/`Stat`/`DeviceInfo`, verified by a synthetic-backup round-trip (milestone 2).
-Per-file streaming decryption lands next. The plan and full spec live in
+**Status: functional on synthetic backups.** The full decrypt path works end to end:
+keybag parse + two-stage PBKDF2 KDF + RFC 3394 unwrap (milestone 1, proven against
+known-answer vectors); `Manifest.db` decryption and `Files`-table reads via
+`Open`/`Unlock`/`List`/`Stat`/`DeviceInfo` (milestone 2); and per-file streaming
+decryption via `DecryptFile` (milestone 3), all verified by a self-contained
+synthetic-backup round-trip under `-race`. Next: differential testing against the Python
+reference, then a real-backup differential. The plan and full spec live in
 [`CLAUDE.md`](CLAUDE.md).
 
 ## Build & test

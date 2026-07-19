@@ -38,11 +38,14 @@ const protectionClass uint32 = 4
 // wrapPassphrase marks a class key wrapped by the passphrase-derived KEK.
 const wrapPassphrase = 2
 
-// File is one row to place in the fixture's Files table.
+// File is one row to place in the fixture's Files table. When Data is non-nil the
+// builder writes an encrypted on-disk blob and a full file record with an EncryptionKey;
+// when Data is nil (a directory) it writes a keyless record with size 0.
 type File struct {
 	Domain       string
 	RelativePath string
 	Flags        int64 // 1 = file, 2 = directory (iOS convention)
+	Data         []byte
 }
 
 // Spec describes the synthetic backup to build.
@@ -123,8 +126,9 @@ func Build(dir string, spec Spec) (*Result, error) {
 	binary.LittleEndian.PutUint32(manifestKeyField[:4], protectionClass)
 	copy(manifestKeyField[4:], wrappedManifest)
 
-	// Manifest.db: a real SQLite Files table, AES-CBC-encrypted under the Manifest key.
-	written, dbBytes, err := buildManifestDB(spec.Files)
+	// Manifest.db: a real SQLite Files table (with per-file records and on-disk
+	// encrypted blobs), AES-CBC-encrypted under the Manifest key.
+	written, dbBytes, err := buildManifestDB(dir, classKey, spec.Files)
 	if err != nil {
 		return nil, err
 	}
@@ -200,9 +204,10 @@ func buildKeybag(kek, dpsl, salt []byte, dpic, iter uint32, classKey []byte) ([]
 	return b.Bytes(), nil
 }
 
-// buildManifestDB creates a SQLite database with a Files table, inserts the rows, and
-// returns the recorded rows plus the raw database bytes.
-func buildManifestDB(files []File) ([]WrittenFile, []byte, error) {
+// buildManifestDB creates a SQLite database with a Files table, inserts a row (with its
+// NSKeyedArchiver file record) per entry, writes each file's encrypted on-disk blob into
+// dir, and returns the recorded rows plus the raw database bytes.
+func buildManifestDB(dir string, classKey []byte, files []File) ([]WrittenFile, []byte, error) {
 	tmp, err := os.CreateTemp("", "iosbackup-build-*.db")
 	if err != nil {
 		return nil, nil, err
@@ -223,9 +228,14 @@ func buildManifestDB(files []File) ([]WrittenFile, []byte, error) {
 	written := make([]WrittenFile, 0, len(files))
 	for _, f := range files {
 		id := fileID(f.Domain, f.RelativePath)
+		record, err := buildFileRecord(dir, id, classKey, f)
+		if err != nil {
+			_ = db.Close()
+			return nil, nil, err
+		}
 		if _, err := db.Exec(
 			`INSERT INTO Files (fileID, domain, relativePath, flags, file) VALUES (?,?,?,?,?)`,
-			id, f.Domain, f.RelativePath, f.Flags, []byte{},
+			id, f.Domain, f.RelativePath, f.Flags, record,
 		); err != nil {
 			_ = db.Close()
 			return nil, nil, err
@@ -241,6 +251,74 @@ func buildManifestDB(files []File) ([]WrittenFile, []byte, error) {
 		return nil, nil, err
 	}
 	return written, dbBytes, nil
+}
+
+// buildFileRecord builds the NSKeyedArchiver blob for one Files row. For a file (Data
+// non-nil) it also generates a per-file key, wraps it under the class key into the
+// EncryptionKey object, and writes the AES-CBC-encrypted (PKCS#7-padded) content to
+// <dir>/<id[:2]>/<id>. Directories get a keyless, size-0 record.
+func buildFileRecord(dir, id string, classKey []byte, f File) ([]byte, error) {
+	record := map[string]any{
+		"Size":            len(f.Data),
+		"ProtectionClass": int(protectionClass),
+		"RelativePath":    f.RelativePath,
+	}
+	objects := []any{"$null", record}
+
+	if f.Data != nil {
+		fileKey, err := randBytes(32)
+		if err != nil {
+			return nil, err
+		}
+		wrapped, err := aeskw.Wrap(classKey, fileKey)
+		if err != nil {
+			return nil, err
+		}
+		encKeyData := make([]byte, 4+len(wrapped))
+		binary.LittleEndian.PutUint32(encKeyData[:4], protectionClass)
+		copy(encKeyData[4:], wrapped)
+
+		objects = append(objects, map[string]any{"NS.data": encKeyData})
+		record["EncryptionKey"] = plist.UID(len(objects) - 1)
+
+		if err := writeEncryptedBlob(dir, id, fileKey, f.Data); err != nil {
+			return nil, err
+		}
+	}
+
+	archive := map[string]any{
+		"$version":  100000,
+		"$archiver": "NSKeyedArchiver",
+		"$top":      map[string]any{"root": plist.UID(1)},
+		"$objects":  objects,
+	}
+	return plist.Marshal(archive, plist.BinaryFormat)
+}
+
+// writeEncryptedBlob PKCS#7-pads data to the AES block size, AES-CBC-encrypts it under
+// fileKey (zero IV), and writes it to <dir>/<id[:2]>/<id>.
+func writeEncryptedBlob(dir, id string, fileKey, data []byte) error {
+	var enc bytes.Buffer
+	if _, err := aescbc.EncryptStream(&enc, bytes.NewReader(pkcs7Pad(data, 16)), fileKey, make([]byte, 16)); err != nil {
+		return err
+	}
+	sub := filepath.Join(dir, id[:2])
+	if err := os.MkdirAll(sub, 0o700); err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(sub, id), enc.Bytes(), 0o600)
+}
+
+// pkcs7Pad appends PKCS#7 padding (always 1..block bytes, matching iOS's per-file
+// encryption) so the result is a whole number of blocks.
+func pkcs7Pad(data []byte, block int) []byte {
+	n := block - len(data)%block
+	out := make([]byte, len(data)+n)
+	copy(out, data)
+	for i := len(data); i < len(out); i++ {
+		out[i] = byte(n)
+	}
+	return out
 }
 
 // fileID mirrors iOS's on-disk naming: SHA-1 of "domain-relativePath", hex-encoded.

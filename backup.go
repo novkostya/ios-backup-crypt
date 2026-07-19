@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"io"
 	"iter"
 	"os"
 	"path/filepath"
@@ -21,8 +22,12 @@ var (
 	ErrNotEncrypted = errors.New("iosbackup: backup is not encrypted")
 	// ErrLocked reports an operation that needs the backup unlocked first.
 	ErrLocked = errors.New("iosbackup: backup is locked (call Unlock first)")
-	// ErrFileNotFound reports a Stat for a fileID absent from the Files table.
+	// ErrFileNotFound reports a Stat/DecryptFile for a fileID absent from the Files
+	// table.
 	ErrFileNotFound = errors.New("iosbackup: file not found")
+	// ErrNotAFile reports a DecryptFile for a record with no encryption key — a
+	// directory or symlink, which has no decryptable content.
+	ErrNotAFile = errors.New("iosbackup: entry has no encrypted content (directory or symlink)")
 )
 
 // FileEntry is one row of the backup's Files table.
@@ -228,6 +233,58 @@ func (b *Backup) Stat(fileID string) (FileEntry, error) {
 	return e, nil
 }
 
+// DecryptFile streams the decrypted contents of the file with the given fileID into w.
+// It reads the file's NSKeyedArchiver record from the Files table, unwraps the per-file
+// key with the record's protection-class key, opens the on-disk blob at
+// <backup>/<fileID[:2]>/<fileID>, and AES-CBC-decrypts it block-at-a-time, truncating to
+// the record's stored size (which strips the CBC/PKCS#7 padding). The backup must be
+// unlocked. It returns ErrNotAFile for directories/symlinks and ErrFileNotFound for an
+// unknown fileID.
+func (b *Backup) DecryptFile(fileID string, w io.Writer) error {
+	if b.db == nil {
+		return ErrLocked
+	}
+	if len(fileID) < 2 {
+		return ErrFileNotFound
+	}
+
+	var blob []byte
+	switch err := b.db.QueryRow("SELECT file FROM Files WHERE fileID = ? LIMIT 1", fileID).Scan(&blob); {
+	case errors.Is(err, sql.ErrNoRows):
+		return ErrFileNotFound
+	case err != nil:
+		return err
+	}
+
+	rec, err := decodeFileRecord(blob)
+	if err != nil {
+		return err
+	}
+	if rec.encryptionKey == nil {
+		return fmt.Errorf("%w: %s", ErrNotAFile, fileID)
+	}
+
+	fileKey, err := b.keybag.UnwrapKeyForClass(rec.protectionClass, rec.encryptionKey)
+	if err != nil {
+		return fmt.Errorf("iosbackup: unwrap file key for %s: %w", fileID, err)
+	}
+
+	enc, err := os.Open(filepath.Join(b.dir, fileID[:2], fileID))
+	if err != nil {
+		return err
+	}
+	defer func() { _ = enc.Close() }()
+
+	lw := &limitWriter{w: w, remaining: rec.size}
+	if _, err := aescbc.DecryptStream(lw, enc, fileKey, make([]byte, 16)); err != nil {
+		return fmt.Errorf("iosbackup: decrypt %s: %w", fileID, err)
+	}
+	if lw.remaining > 0 {
+		return fmt.Errorf("iosbackup: %s is %d bytes short of its recorded size %d", fileID, lw.remaining, rec.size)
+	}
+	return nil
+}
+
 // DeviceInfo reports the device name and iOS version (from Manifest.plist, available
 // before unlocking) and the Files-table row count (0 until unlocked).
 func (b *Backup) DeviceInfo() (Info, error) {
@@ -247,4 +304,28 @@ func (b *Backup) DeviceInfo() (Info, error) {
 // literally (paired with ESCAPE '\' in the query).
 func escapeLike(s string) string {
 	return strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(s)
+}
+
+// limitWriter forwards at most remaining bytes to w and silently drops the rest — used
+// to truncate a CBC-decrypted blob to its recorded plaintext size, discarding the
+// trailing block padding. It always reports the full input as consumed so the streaming
+// decrypter processes every ciphertext block.
+type limitWriter struct {
+	w         io.Writer
+	remaining int64
+}
+
+func (l *limitWriter) Write(p []byte) (int, error) {
+	if l.remaining <= 0 {
+		return len(p), nil
+	}
+	take := int64(len(p))
+	if take > l.remaining {
+		take = l.remaining
+	}
+	if _, err := l.w.Write(p[:take]); err != nil {
+		return 0, err
+	}
+	l.remaining -= take
+	return len(p), nil
 }
