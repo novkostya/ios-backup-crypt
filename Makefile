@@ -103,7 +103,7 @@ gates-real: tc-go tc-py ## Real-backup differential vs the Python reference (ope
 	$(RUN) -w /src -v "$(IOSBACKUP_REAL_DIR):/backup:ro" \
 	  -v $(GO_BUILD_VOL):/root/.cache/go-build -v $(GO_MOD_VOL):/go/pkg/mod \
 	  -e CGO_ENABLED=1 -e GOTOOLCHAIN=local -e REAL_BACKUP=/backup -e DIFF_OUT=/src/.realtmp -e IOSBACKUP_REAL_PASSWORD \
-	  $(TC_GO) sh -euc 'go test -count=1 -timeout 600s -run TestRealBackupDifferential ./'
+	  $(TC_GO) sh -euc 'go test -v -count=1 -timeout 600s -run TestRealBackupDifferential ./'
 	# 2) Python reference: decrypt the SAME real backup and byte-compare (password from env).
 	$(RUN) -w /src -v "$(IOSBACKUP_REAL_DIR):/backup:ro" -e IOSBACKUP_REAL_PASSWORD \
 	  $(TC_PY) python deploy/differential.py /src/.realtmp --backup /backup --password-env IOSBACKUP_REAL_PASSWORD
@@ -117,7 +117,7 @@ extract-real: tc-go ## Decrypt a real backup to a logical <domain>/<path> tree a
 	  -v $(GO_BUILD_VOL):/root/.cache/go-build -v $(GO_MOD_VOL):/go/pkg/mod \
 	  -e CGO_ENABLED=1 -e GOTOOLCHAIN=local -e REAL_BACKUP=/backup -e IOSBACKUP_EXTRACT_OUT=/out \
 	  -e IOSBACKUP_REAL_PASSWORD -e IOSBACKUP_EXTRACT_MAXBYTES \
-	  $(TC_GO) sh -euc 'go test -count=1 -timeout 0 -run TestRealBackupExtractAll ./'
+	  $(TC_GO) sh -euc 'go test -v -count=1 -timeout 0 -run TestRealBackupExtractAll ./'
 
 .PHONY: test
 test: tc-go ## Just the tests (go test -race), no lint — for a fast inner loop
