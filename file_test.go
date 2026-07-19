@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"errors"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -65,6 +67,36 @@ func TestDecryptFileRoundTrip(t *testing.T) {
 	// Unknown fileID.
 	if err := b.DecryptFile(strings.Repeat("a", 40), io.Discard); !errors.Is(err, ErrFileNotFound) {
 		t.Fatalf("DecryptFile(unknown): got %v, want ErrFileNotFound", err)
+	}
+}
+
+// TestDecryptFileIncomplete simulates the real-backup quirk where a file's on-disk data
+// is shorter than its recorded size (a file still being written when the backup ran):
+// DecryptFile must report ErrIncompleteFile rather than a generic error.
+func TestDecryptFileIncomplete(t *testing.T) {
+	dir := t.TempDir()
+	res, err := builder.Build(dir, builder.Spec{
+		Files: []builder.File{{Domain: "HomeDomain", RelativePath: "live.db", Flags: 1, Data: bytes.Repeat([]byte{0x7}, 4096)}},
+	})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	// Truncate the on-disk blob so it decrypts to fewer bytes than the recorded size.
+	id := res.Files[0].FileID
+	if err := os.Truncate(filepath.Join(dir, id[:2], id), 2048); err != nil {
+		t.Fatalf("truncate: %v", err)
+	}
+
+	b, err := Open(dir)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = b.Close() })
+	if err := b.Unlock("test"); err != nil {
+		t.Fatalf("Unlock: %v", err)
+	}
+	if err := b.DecryptFile(id, io.Discard); !errors.Is(err, ErrIncompleteFile) {
+		t.Fatalf("DecryptFile(truncated): got %v, want ErrIncompleteFile", err)
 	}
 }
 

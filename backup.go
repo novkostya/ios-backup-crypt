@@ -28,6 +28,12 @@ var (
 	// ErrNotAFile reports a DecryptFile for a record with no encryption key — a
 	// directory or symlink, which has no decryptable content.
 	ErrNotAFile = errors.New("iosbackup: entry has no encrypted content (directory or symlink)")
+	// ErrIncompleteFile reports a file whose on-disk encrypted data is shorter than the
+	// size recorded in its metadata. Real backups contain such files when a file was
+	// still being written as the backup ran (e.g. a live database). DecryptFile writes
+	// what it could decrypt and returns this error wrapped; callers extracting in bulk
+	// typically detect it with errors.Is and skip the file.
+	ErrIncompleteFile = errors.New("iosbackup: on-disk data shorter than the recorded size")
 )
 
 // FileEntry is one row of the backup's Files table.
@@ -280,7 +286,7 @@ func (b *Backup) DecryptFile(fileID string, w io.Writer) error {
 		return fmt.Errorf("iosbackup: decrypt %s: %w", fileID, err)
 	}
 	if lw.remaining > 0 {
-		return fmt.Errorf("iosbackup: %s is %d bytes short of its recorded size %d", fileID, lw.remaining, rec.size)
+		return fmt.Errorf("%w: %s (%d of %d bytes on disk)", ErrIncompleteFile, fileID, rec.size-lw.remaining, rec.size)
 	}
 	return nil
 }
