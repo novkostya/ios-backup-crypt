@@ -72,7 +72,10 @@ tc-py: preflight ## Build the Python reference (differential oracle) image
 
 .PHONY: gates-diff
 gates-diff: tc-go tc-py ## Differential: Go and the Python reference decrypt one synthetic fixture, byte-compared (rung 3)
-	rm -rf $(ROOT)/.difftmp && mkdir -p $(ROOT)/.difftmp
+	# The fixture is written by container-root and includes 0700 dirs, so ALL .difftmp
+	# creation/removal happens in-container — a non-root CI host can't rm root-owned files.
+	# Clear any stale scratch from a previous failed run.
+	$(RUN) $(TC_GO) rm -rf /src/.difftmp
 	# 1) Go: build a synthetic backup, decrypt it, emit outputs + index into .difftmp.
 	$(RUN) -w /src \
 	  -v $(GO_BUILD_VOL):/root/.cache/go-build -v $(GO_MOD_VOL):/go/pkg/mod \
@@ -80,7 +83,8 @@ gates-diff: tc-go tc-py ## Differential: Go and the Python reference decrypt one
 	  sh -euc 'go test -count=1 -run TestWriteDifferentialFixture ./'
 	# 2) Python: decrypt the SAME fixture with the reference and byte-compare.
 	$(RUN) -w /src $(TC_PY) python deploy/differential.py /src/.difftmp
-	rm -rf $(ROOT)/.difftmp
+	# 3) Clean up in-container (files are container-root-owned).
+	$(RUN) $(TC_GO) rm -rf /src/.difftmp
 
 .PHONY: test
 test: tc-go ## Just the tests (go test -race), no lint — for a fast inner loop
