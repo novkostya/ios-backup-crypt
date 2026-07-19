@@ -21,7 +21,8 @@ jobs:
   gates:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      # v5+ runs on Node 24; v4 pinned the now-deprecated Node 20 runtime.
+      - uses: actions/checkout@v5
       # Docker (with buildkit) is preinstalled on ubuntu-latest; the Makefile autodetects
       # it and runs each gate in its toolchain container. No language setup needed.
       - name: Gate ladder (Go)
