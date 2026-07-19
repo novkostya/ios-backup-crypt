@@ -43,6 +43,13 @@ make extract-real IOSBACKUP_REAL_DIR=/path/to/backup/<UDID> \
      EXTRACT_OUT=/somewhere/with/room IOSBACKUP_EXTRACT_MAXBYTES=52428800
 ```
 
+To decrypt every file but write nothing — a full-backup decrypt check that reports the
+tally (extracted / incomplete / errored) without touching the disk — use `make verify-real`:
+
+```sh
+make verify-real IOSBACKUP_REAL_DIR=/path/to/backup/<UDID>
+```
+
 ## Style
 
 - Keep the public API small, and give every exported symbol a godoc comment.

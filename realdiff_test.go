@@ -3,6 +3,7 @@ package iosbackup
 import (
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -131,6 +132,10 @@ func TestRealBackupExtractAll(t *testing.T) {
 	b := openRealBackup(t, dir)
 	defer func() { _ = b.Close() }()
 
+	// EXTRACT_OUT=/dev/null means "verify only": decrypt every file but write nothing —
+	// exercises the whole decrypt path and reports the tally without touching the disk.
+	discard := outRoot == "/dev/null"
+
 	var nFiles, nCapped, nIncomplete, nErrors int
 	var nBytes int64
 	for e := range b.List("", "") {
@@ -146,23 +151,36 @@ func TestRealBackupExtractAll(t *testing.T) {
 			nCapped++
 			continue
 		}
-		dst, ok := safeTreePath(outRoot, e.Domain, e.RelativePath)
-		if !ok {
-			t.Fatalf("refusing unsafe path: domain=%q relativePath=%q", e.Domain, e.RelativePath)
+
+		var w = io.Discard // io.Writer; reassigned to the output file below unless discarding
+		var out *os.File
+		var dst string
+		if !discard {
+			var ok bool
+			if dst, ok = safeTreePath(outRoot, e.Domain, e.RelativePath); !ok {
+				t.Fatalf("refusing unsafe path: domain=%q relativePath=%q", e.Domain, e.RelativePath)
+			}
+			if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if out, err = os.Create(dst); err != nil {
+				t.Fatal(err)
+			}
+			w = out
 		}
-		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-			t.Fatal(err)
+
+		derr := b.DecryptFile(e.FileID, w)
+		if out != nil {
+			if cerr := out.Close(); cerr != nil && derr == nil {
+				t.Fatal(cerr)
+			}
 		}
-		f, err := os.Create(dst)
-		if err != nil {
-			t.Fatal(err)
-		}
-		derr := b.DecryptFile(e.FileID, f)
-		cerr := f.Close()
 		if derr != nil {
-			// Real backups contain files stored incompletely; skip and drop the partial
-			// rather than aborting the whole extraction.
-			_ = os.Remove(dst)
+			// Real backups contain files stored incompletely; skip (dropping any partial)
+			// rather than aborting the whole run.
+			if out != nil {
+				_ = os.Remove(dst)
+			}
 			if errors.Is(derr, ErrIncompleteFile) {
 				nIncomplete++
 			} else {
@@ -171,16 +189,17 @@ func TestRealBackupExtractAll(t *testing.T) {
 			}
 			continue
 		}
-		if cerr != nil {
-			t.Fatal(cerr)
-		}
 		nFiles++
 		nBytes += st.Size()
 	}
 	if err := b.Err(); err != nil {
 		t.Fatalf("List: %v", err)
 	}
-	t.Logf("extracted %d files (~%d MiB) to %s", nFiles, nBytes>>20, outRoot)
+	dest := outRoot
+	if discard {
+		dest = "/dev/null (verify only, nothing written)"
+	}
+	t.Logf("decrypted %d files (~%d MiB) -> %s", nFiles, nBytes>>20, dest)
 	t.Logf("skipped: %d over size cap, %d incomplete (stored shorter than recorded), %d other errors", nCapped, nIncomplete, nErrors)
 }
 

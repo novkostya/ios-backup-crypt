@@ -119,6 +119,15 @@ extract-real: tc-go ## Decrypt a real backup to a logical <domain>/<path> tree a
 	  -e IOSBACKUP_REAL_PASSWORD -e IOSBACKUP_EXTRACT_MAXBYTES \
 	  $(TC_GO) sh -euc 'go test -v -count=1 -timeout 0 -run TestRealBackupExtractAll ./'
 
+.PHONY: verify-real
+verify-real: tc-go ## Decrypt every file to /dev/null — full decrypt + tally with NO disk writes (operator-local)
+	@test -n "$(IOSBACKUP_REAL_DIR)" || { echo "set IOSBACKUP_REAL_DIR=<backup dir> and export IOSBACKUP_REAL_PASSWORD"; exit 1; }
+	$(RUN) -w /src -v "$(IOSBACKUP_REAL_DIR):/backup:ro" \
+	  -v $(GO_BUILD_VOL):/root/.cache/go-build -v $(GO_MOD_VOL):/go/pkg/mod \
+	  -e CGO_ENABLED=1 -e GOTOOLCHAIN=local -e REAL_BACKUP=/backup -e IOSBACKUP_EXTRACT_OUT=/dev/null \
+	  -e IOSBACKUP_REAL_PASSWORD -e IOSBACKUP_EXTRACT_MAXBYTES \
+	  $(TC_GO) sh -euc 'go test -v -count=1 -timeout 0 -run TestRealBackupExtractAll ./'
+
 .PHONY: test
 test: tc-go ## Just the tests (go test -race), no lint — for a fast inner loop
 	$(RUN) -w /src \
