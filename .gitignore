@@ -6,6 +6,9 @@
 *.out
 *.prof
 
+# --- Differential-gate scratch (fixture + decrypted outputs; regenerated each run) ---
+/.difftmp/
+
 # --- Real-backup material: NEVER committed (personal data; ladder rung 4 is env-driven) ---
 # The real-backup differential test reads a path from an env var; nothing local is tracked.
 /local/

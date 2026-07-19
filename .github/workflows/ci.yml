@@ -23,6 +23,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       # Docker (with buildkit) is preinstalled on ubuntu-latest; the Makefile autodetects
-      # it and runs the gate in its toolchain container. No language setup needed.
-      - name: Gate ladder
+      # it and runs each gate in its toolchain container. No language setup needed.
+      - name: Gate ladder (Go)
         run: make gates
+      - name: Differential vs the Python reference (rung 3)
+        run: make gates-diff

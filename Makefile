@@ -19,13 +19,18 @@ IMAGE_TAG  ?= local
 GO_BUILD_VOL := ios-backup-crypt-go-build
 GO_MOD_VOL   := ios-backup-crypt-go-mod
 
-# Locally-built toolchain image (== the deploy/Dockerfile toolchain-go stage).
+# Locally-built toolchain images (== the deploy/Dockerfile stages).
 TC_GO := ios-backup-crypt-toolchain-go:$(IMAGE_TAG)
+TC_PY := ios-backup-crypt-toolchain-py:$(IMAGE_TAG)
 
 # Build-args threaded into the image build so the Dockerfile and the gate agree on pins.
 BUILD_ARGS := \
 	--build-arg GO_IMAGE=$(GO_IMAGE) \
 	--build-arg GOLANGCI_LINT_VERSION=$(GOLANGCI_LINT_VERSION)
+
+PY_BUILD_ARGS := \
+	--build-arg PYTHON_IMAGE=$(PYTHON_IMAGE) \
+	--build-arg IPHONE_BACKUP_DECRYPT_VERSION=$(IPHONE_BACKUP_DECRYPT_VERSION)
 
 # `RUN`: repo bind-mounted at /src.
 RUN := $(RUNTIME) run --rm -v $(ROOT):/src
@@ -58,6 +63,25 @@ gates: tc-go ## Run the gate: gofmt -l (empty) + go vet + golangci-lint + go tes
 	    golangci-lint run; \
 	    go test -race ./...'
 
+.PHONY: gates-all
+gates-all: gates gates-diff ## The full ladder: the Go gate + the differential (rung 3)
+
+.PHONY: tc-py
+tc-py: preflight ## Build the Python reference (differential oracle) image
+	$(RUNTIME) build $(PY_BUILD_ARGS) --target toolchain-py -t $(TC_PY) -f deploy/Dockerfile .
+
+.PHONY: gates-diff
+gates-diff: tc-go tc-py ## Differential: Go and the Python reference decrypt one synthetic fixture, byte-compared (rung 3)
+	rm -rf $(ROOT)/.difftmp && mkdir -p $(ROOT)/.difftmp
+	# 1) Go: build a synthetic backup, decrypt it, emit outputs + index into .difftmp.
+	$(RUN) -w /src \
+	  -v $(GO_BUILD_VOL):/root/.cache/go-build -v $(GO_MOD_VOL):/go/pkg/mod \
+	  -e CGO_ENABLED=1 -e GOTOOLCHAIN=local -e DIFF_OUT=/src/.difftmp $(TC_GO) \
+	  sh -euc 'go test -count=1 -run TestWriteDifferentialFixture ./'
+	# 2) Python: decrypt the SAME fixture with the reference and byte-compare.
+	$(RUN) -w /src $(TC_PY) python deploy/differential.py /src/.difftmp
+	rm -rf $(ROOT)/.difftmp
+
 .PHONY: test
 test: tc-go ## Just the tests (go test -race), no lint — for a fast inner loop
 	$(RUN) -w /src \
@@ -71,6 +95,7 @@ tidy: tc-go ## Run `go mod tidy` inside the toolchain container
 	  -e GOTOOLCHAIN=local $(TC_GO) sh -euc 'go mod tidy'
 
 .PHONY: clean
-clean: ## Drop cache volumes and the locally-built toolchain image
+clean: ## Drop cache volumes and the locally-built toolchain images
+	-rm -rf $(ROOT)/.difftmp
 	-$(RUNTIME) volume rm $(GO_BUILD_VOL) $(GO_MOD_VOL)
-	-$(RUNTIME) rmi $(TC_GO)
+	-$(RUNTIME) rmi $(TC_GO) $(TC_PY)

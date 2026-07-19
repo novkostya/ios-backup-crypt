@@ -90,3 +90,25 @@ func TestDeriveKEKStageOrder(t *testing.T) {
 		t.Fatalf("KEK length %d, want %d", len(got), kekLen)
 	}
 }
+
+// BenchmarkDeriveKEKRealistic measures the unlock KDF at production work factors
+// (DPIC = 10,000,000 SHA-256 rounds, then ITER = 10,000 SHA-1 rounds) — the deliberately
+// slow key derivation a real backup password goes through. It is not part of the gate
+// (benchmarks do not run under `go test`); measure a single unlock with:
+//
+//	go test -run '^$' -bench BenchmarkDeriveKEKRealistic -benchtime=1x ./internal/keybag
+//
+// Recorded measurement (milestone 4): ~1.45 s per unlock on an Intel Core Ultra 7 155H
+// (which has the SHA-NI extension Go's crypto/sha256 uses). That leaves a wide margin
+// under the ~30 s budget: even hardware ~15x slower with no SHA acceleration stays inside
+// it, and modern arm64 NAS SoCs (ARMv8 SHA2 extensions) land in the low seconds.
+func BenchmarkDeriveKEKRealistic(b *testing.B) {
+	dpsl := []byte("differential-salt-dpsl-16b")
+	salt := []byte("keybag-header-salt-value")
+	const dpic, iter = 10_000_000, 10_000
+	for b.Loop() {
+		if _, err := deriveKEK("correct horse battery staple", dpsl, dpic, salt, iter); err != nil {
+			b.Fatal(err)
+		}
+	}
+}

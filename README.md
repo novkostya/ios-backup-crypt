@@ -9,14 +9,16 @@
 > the key from the backup password, decrypts `Manifest.db`, and streams individual files
 > out by their original domain + path.
 
-**Status: functional on synthetic backups.** The full decrypt path works end to end:
-keybag parse + two-stage PBKDF2 KDF + RFC 3394 unwrap (milestone 1, proven against
-known-answer vectors); `Manifest.db` decryption and `Files`-table reads via
-`Open`/`Unlock`/`List`/`Stat`/`DeviceInfo` (milestone 2); and per-file streaming
-decryption via `DecryptFile` (milestone 3), all verified by a self-contained
-synthetic-backup round-trip under `-race`. Next: differential testing against the Python
-reference, then a real-backup differential. The plan and full spec live in
-[`CLAUDE.md`](CLAUDE.md).
+**Status: functional on synthetic backups, differentially verified.** The full decrypt
+path works end to end: keybag parse + two-stage PBKDF2 KDF + RFC 3394 unwrap (milestone 1,
+proven against known-answer vectors); `Manifest.db` decryption and `Files`-table reads via
+`Open`/`Unlock`/`List`/`Stat`/`DeviceInfo` (milestone 2); and per-file streaming decryption
+via `DecryptFile` (milestone 3) — all verified by a self-contained synthetic-backup
+round-trip under `-race`. A differential gate (milestone 4) decrypts the same synthetic
+fixture with the Python `iphone_backup_decrypt` reference and asserts **byte-identical**
+Manifest.db and file output, so no constant is subtly wrong. A realistic 10M-round unlock
+measures ~1.5 s on a modern laptop core. Next: a real-backup differential, then a `v0.1`
+tag. The plan and full spec live in [`CLAUDE.md`](CLAUDE.md).
 
 ## Build & test
 
