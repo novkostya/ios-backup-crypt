@@ -11,9 +11,11 @@ import (
 )
 
 // diffIndex is written to <DIFF_OUT>/index.json so the Python comparator
-// (deploy/differential.py) knows the password and which files to extract and compare.
+// (deploy/differential.py) knows which files to extract and compare. For the synthetic
+// fixture it also carries the (throwaway) password; for a real backup the password is
+// omitted here and passed to the comparator via the environment instead.
 type diffIndex struct {
-	Password string          `json:"password"`
+	Password string          `json:"password,omitempty"`
 	Files    []diffIndexFile `json:"files"`
 }
 

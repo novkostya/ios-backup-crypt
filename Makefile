@@ -86,6 +86,39 @@ gates-diff: tc-go tc-py ## Differential: Go and the Python reference decrypt one
 	# 3) Clean up in-container (files are container-root-owned).
 	$(RUN) $(TC_GO) rm -rf /src/.difftmp
 
+# ---------------------------------------------------------------------------
+# OPERATOR-LOCAL real-backup targets (testing-ladder rung 4). NEVER in CI: they read a
+# real backup + password from the environment, and touch real personal data. Nothing
+# here is committed — the harness is generic; the path, password, and decrypted output
+# stay on the operator's machine. See CONTRIBUTING.md.
+#
+#   IOSBACKUP_REAL_DIR       host path to the backup directory (bind-mounted read-only)
+#   IOSBACKUP_REAL_PASSWORD  the backup password (exported; forwarded, never on argv)
+# ---------------------------------------------------------------------------
+.PHONY: gates-real
+gates-real: tc-go tc-py ## Real-backup differential vs the Python reference (operator-local; needs IOSBACKUP_REAL_DIR + exported IOSBACKUP_REAL_PASSWORD)
+	@test -n "$(IOSBACKUP_REAL_DIR)" || { echo "set IOSBACKUP_REAL_DIR=<backup dir> and export IOSBACKUP_REAL_PASSWORD"; exit 1; }
+	$(RUN) $(TC_GO) rm -rf /src/.realtmp
+	# 1) Go: decrypt the real Manifest.db + a spread sample of files.
+	$(RUN) -w /src -v "$(IOSBACKUP_REAL_DIR):/backup:ro" \
+	  -v $(GO_BUILD_VOL):/root/.cache/go-build -v $(GO_MOD_VOL):/go/pkg/mod \
+	  -e CGO_ENABLED=1 -e GOTOOLCHAIN=local -e REAL_BACKUP=/backup -e DIFF_OUT=/src/.realtmp -e IOSBACKUP_REAL_PASSWORD \
+	  $(TC_GO) sh -euc 'go test -count=1 -timeout 600s -run TestRealBackupDifferential ./'
+	# 2) Python reference: decrypt the SAME real backup and byte-compare (password from env).
+	$(RUN) -w /src -v "$(IOSBACKUP_REAL_DIR):/backup:ro" -e IOSBACKUP_REAL_PASSWORD \
+	  $(TC_PY) python deploy/differential.py /src/.realtmp --backup /backup --password-env IOSBACKUP_REAL_PASSWORD
+	$(RUN) $(TC_GO) rm -rf /src/.realtmp
+
+.PHONY: extract-real
+extract-real: tc-go ## Decrypt a real backup to a logical <domain>/<path> tree at EXTRACT_OUT (operator-local; real personal data — keep it local)
+	@test -n "$(IOSBACKUP_REAL_DIR)" || { echo "set IOSBACKUP_REAL_DIR=<backup dir> and export IOSBACKUP_REAL_PASSWORD"; exit 1; }
+	@test -n "$(EXTRACT_OUT)" || { echo "set EXTRACT_OUT=<host dir for the decrypted tree> (needs room for the backup; use IOSBACKUP_EXTRACT_MAXBYTES to skip large media)"; exit 1; }
+	$(RUN) -w /src -v "$(IOSBACKUP_REAL_DIR):/backup:ro" -v "$(EXTRACT_OUT):/out" \
+	  -v $(GO_BUILD_VOL):/root/.cache/go-build -v $(GO_MOD_VOL):/go/pkg/mod \
+	  -e CGO_ENABLED=1 -e GOTOOLCHAIN=local -e REAL_BACKUP=/backup -e IOSBACKUP_EXTRACT_OUT=/out \
+	  -e IOSBACKUP_REAL_PASSWORD -e IOSBACKUP_EXTRACT_MAXBYTES \
+	  $(TC_GO) sh -euc 'go test -count=1 -timeout 0 -run TestRealBackupExtractAll ./'
+
 .PHONY: test
 test: tc-go ## Just the tests (go test -race), no lint — for a fast inner loop
 	$(RUN) -w /src \
