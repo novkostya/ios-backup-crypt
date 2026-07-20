@@ -49,7 +49,11 @@ preflight:
 	@test -n "$(RUNTIME)" || { echo "ERROR: no container runtime (nerdctl/docker) found. This box must be a container host."; exit 1; }
 
 .PHONY: tc-go
-tc-go: preflight ## Build the pinned Go toolchain image from deploy/Dockerfile
+tc-go: preflight ## Ensure the Go toolchain image exists (builds only if missing — see tc-go-force)
+	@$(RUNTIME) image inspect $(TC_GO) >/dev/null 2>&1 || $(MAKE) --no-print-directory tc-go-force
+
+.PHONY: tc-go-force
+tc-go-force: preflight ## Rebuild the Go toolchain image (run after a versions.env / Dockerfile change)
 	$(RUNTIME) build $(BUILD_ARGS) --target toolchain-go -t $(TC_GO) -f deploy/Dockerfile .
 
 .PHONY: gates
@@ -67,7 +71,11 @@ gates: tc-go ## Run the gate: gofmt -l (empty) + go vet + golangci-lint + go tes
 gates-all: gates gates-diff ## The full ladder: the Go gate + the differential (rung 3)
 
 .PHONY: tc-py
-tc-py: preflight ## Build the Python reference (differential oracle) image
+tc-py: preflight ## Ensure the Python oracle image exists (builds only if missing — see tc-py-force)
+	@$(RUNTIME) image inspect $(TC_PY) >/dev/null 2>&1 || $(MAKE) --no-print-directory tc-py-force
+
+.PHONY: tc-py-force
+tc-py-force: preflight ## Rebuild the Python reference (differential oracle) image
 	$(RUNTIME) build $(PY_BUILD_ARGS) --target toolchain-py -t $(TC_PY) -f deploy/Dockerfile .
 
 .PHONY: gates-diff
@@ -118,6 +126,14 @@ extract-real: tc-go ## Decrypt a real backup to a logical <domain>/<path> tree a
 	  -e CGO_ENABLED=1 -e GOTOOLCHAIN=local -e REAL_BACKUP=/backup -e IOSBACKUP_EXTRACT_OUT=/out \
 	  -e IOSBACKUP_REAL_PASSWORD -e IOSBACKUP_EXTRACT_MAXBYTES \
 	  $(TC_GO) sh -euc 'go test -v -count=1 -timeout 0 -run TestRealBackupExtractAll ./'
+
+.PHONY: diagnose-real
+diagnose-real: tc-go ## Explain why specific files are missing from an extract (operator-local)
+	@test -n "$(IOSBACKUP_REAL_DIR)" || { echo "set IOSBACKUP_REAL_DIR=<backup dir> and export IOSBACKUP_REAL_PASSWORD"; exit 1; }
+	$(RUN) -w /src -v "$(IOSBACKUP_REAL_DIR):/backup:ro" \
+	  -v $(GO_BUILD_VOL):/root/.cache/go-build -v $(GO_MOD_VOL):/go/pkg/mod \
+	  -e CGO_ENABLED=1 -e GOTOOLCHAIN=local -e REAL_BACKUP=/backup -e IOSBACKUP_DIAGNOSE=1 -e IOSBACKUP_REAL_PASSWORD \
+	  $(TC_GO) sh -euc 'go test -v -count=1 -timeout 900s -run TestRealBackupDiagnose ./'
 
 .PHONY: verify-real
 verify-real: tc-go ## Decrypt every file to /dev/null — full decrypt + tally with NO disk writes (operator-local)
