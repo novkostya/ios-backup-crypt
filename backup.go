@@ -28,12 +28,14 @@ var (
 	// ErrNotAFile reports a DecryptFile for a record with no encryption key — a
 	// directory or symlink, which has no decryptable content.
 	ErrNotAFile = errors.New("iosbackup: entry has no encrypted content (directory or symlink)")
-	// ErrIncompleteFile reports a file whose on-disk encrypted data is shorter than the
-	// size recorded in its metadata. Real backups contain such files when a file was
-	// still being written as the backup ran (e.g. a live database). DecryptFile writes
-	// what it could decrypt and returns this error wrapped; callers extracting in bulk
-	// typically detect it with errors.Is and skip the file.
-	ErrIncompleteFile = errors.New("iosbackup: on-disk data shorter than the recorded size")
+	// ErrIncompleteFile reports that the recovered content is shorter than the size
+	// recorded in the file's metadata. Real backups contain such files when a file was
+	// still being written as the backup ran (e.g. a live database captured mid-write):
+	// fewer bytes reached the backup than the manifest records. It is advisory —
+	// DecryptFile has already written every recovered byte (a usable prefix of the file)
+	// before returning it; callers extracting in bulk typically keep the partial and
+	// flag it with errors.Is rather than discarding it.
+	ErrIncompleteFile = errors.New("iosbackup: recovered content shorter than the recorded size")
 )
 
 // FileEntry is one row of the backup's Files table.
@@ -280,13 +282,26 @@ func (b *Backup) DecryptFile(fileID string, w io.Writer) error {
 		return err
 	}
 	defer func() { _ = enc.Close() }()
+	fi, err := enc.Stat()
+	if err != nil {
+		return err
+	}
 
-	lw := &limitWriter{w: w, remaining: rec.size}
-	if _, err := aescbc.DecryptStream(lw, enc, fileKey, make([]byte, 16)); err != nil {
+	// A complete file's ciphertext is its plaintext size PKCS#7-padded up by a block, so
+	// its final block is padding to strip. If the on-disk ciphertext is shorter than
+	// that, the file was captured mid-write (e.g. a live database): its final block is
+	// real data, not padding, so it is kept as-is. Either way we write the maximum
+	// recoverable content, streaming, holding back only the final block.
+	tw := &tailWriter{w: w, strip: fi.Size() >= paddedLen(rec.size)}
+	if _, err := aescbc.DecryptStream(tw, enc, fileKey, make([]byte, 16)); err != nil {
 		return fmt.Errorf("iosbackup: decrypt %s: %w", fileID, err)
 	}
-	if lw.remaining > 0 {
-		return fmt.Errorf("%w: %s (%d of %d bytes on disk)", ErrIncompleteFile, fileID, rec.size-lw.remaining, rec.size)
+	recovered, err := tw.finish()
+	if err != nil {
+		return fmt.Errorf("iosbackup: decrypt %s: %w", fileID, err)
+	}
+	if recovered < rec.size {
+		return fmt.Errorf("%w: %s (recovered %d of %d bytes)", ErrIncompleteFile, fileID, recovered, rec.size)
 	}
 	return nil
 }
@@ -312,26 +327,68 @@ func escapeLike(s string) string {
 	return strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(s)
 }
 
-// limitWriter forwards at most remaining bytes to w and silently drops the rest — used
-// to truncate a CBC-decrypted blob to its recorded plaintext size, discarding the
-// trailing block padding. It always reports the full input as consumed so the streaming
-// decrypter processes every ciphertext block.
-type limitWriter struct {
-	w         io.Writer
-	remaining int64
+const aesBlockSize = 16
+
+// paddedLen is the ciphertext length of a complete file whose plaintext is size bytes:
+// PKCS#7 pads up to the next block boundary, adding a whole block when already aligned.
+func paddedLen(size int64) int64 {
+	return (size/aesBlockSize + 1) * aesBlockSize
 }
 
-func (l *limitWriter) Write(p []byte) (int, error) {
-	if l.remaining <= 0 {
-		return len(p), nil
+// tailWriter forwards a CBC-decrypted stream to w while holding back the final block, so
+// that at finish it can strip PKCS#7 padding from it (when strip is set and the padding
+// is valid) without buffering the whole file. It reports the number of content bytes
+// written. When strip is false — a truncated, mid-write file whose last block is real
+// data — the final block is written unchanged.
+type tailWriter struct {
+	w     io.Writer
+	strip bool
+	buf   []byte
+	n     int64
+}
+
+func (t *tailWriter) Write(p []byte) (int, error) {
+	t.buf = append(t.buf, p...)
+	if flush := len(t.buf) - aesBlockSize; flush > 0 {
+		if _, err := t.w.Write(t.buf[:flush]); err != nil {
+			return 0, err
+		}
+		t.n += int64(flush)
+		t.buf = t.buf[:copy(t.buf, t.buf[flush:])] // retain only the final block
 	}
-	take := int64(len(p))
-	if take > l.remaining {
-		take = l.remaining
-	}
-	if _, err := l.w.Write(p[:take]); err != nil {
-		return 0, err
-	}
-	l.remaining -= take
 	return len(p), nil
+}
+
+func (t *tailWriter) finish() (int64, error) {
+	b := t.buf
+	if t.strip {
+		if k := pkcs7PadLen(b); k > 0 {
+			b = b[:len(b)-k]
+		}
+	}
+	if len(b) > 0 {
+		if _, err := t.w.Write(b); err != nil {
+			return 0, err
+		}
+		t.n += int64(len(b))
+	}
+	return t.n, nil
+}
+
+// pkcs7PadLen returns the length of valid PKCS#7 padding at the end of b, or 0 if the
+// trailing bytes are not valid padding (so nothing is stripped from real data).
+func pkcs7PadLen(b []byte) int {
+	if len(b) == 0 {
+		return 0
+	}
+	n := int(b[len(b)-1])
+	if n < 1 || n > aesBlockSize || n > len(b) {
+		return 0
+	}
+	for _, c := range b[len(b)-n:] {
+		if int(c) != n {
+			return 0
+		}
+	}
+	return n
 }

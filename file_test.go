@@ -95,8 +95,14 @@ func TestDecryptFileIncomplete(t *testing.T) {
 	if err := b.Unlock("test"); err != nil {
 		t.Fatalf("Unlock: %v", err)
 	}
-	if err := b.DecryptFile(id, io.Discard); !errors.Is(err, ErrIncompleteFile) {
+	var buf bytes.Buffer
+	if err := b.DecryptFile(id, &buf); !errors.Is(err, ErrIncompleteFile) {
 		t.Fatalf("DecryptFile(truncated): got %v, want ErrIncompleteFile", err)
+	}
+	// The recovered content is the valid 2048-byte prefix — NOT false-stripped as if the
+	// trailing 0x07 bytes were PKCS#7 padding (which would drop 7 real bytes).
+	if want := bytes.Repeat([]byte{0x7}, 2048); !bytes.Equal(buf.Bytes(), want) {
+		t.Fatalf("recovered %d bytes, want the 2048-byte prefix intact", buf.Len())
 	}
 }
 

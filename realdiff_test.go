@@ -175,22 +175,23 @@ func TestRealBackupExtractAll(t *testing.T) {
 				t.Fatal(cerr)
 			}
 		}
-		if derr != nil {
-			// Real backups contain files stored incompletely; skip (dropping any partial)
-			// rather than aborting the whole run.
+		switch {
+		case derr == nil || errors.Is(derr, ErrIncompleteFile):
+			// Keep both complete files and recovered partials — a live database captured
+			// mid-write is still usable, and dropping it loses real data.
+			nFiles++
+			nBytes += st.Size()
+			if derr != nil {
+				nIncomplete++
+			}
+		default:
+			// Genuine failure: drop any partial and keep going.
 			if out != nil {
 				_ = os.Remove(dst)
 			}
-			if errors.Is(derr, ErrIncompleteFile) {
-				nIncomplete++
-			} else {
-				nErrors++
-				t.Logf("skip %s / %s: %v", e.Domain, e.RelativePath, derr)
-			}
-			continue
+			nErrors++
+			t.Logf("skip %s / %s: %v", e.Domain, e.RelativePath, derr)
 		}
-		nFiles++
-		nBytes += st.Size()
 	}
 	if err := b.Err(); err != nil {
 		t.Fatalf("List: %v", err)
@@ -199,8 +200,8 @@ func TestRealBackupExtractAll(t *testing.T) {
 	if discard {
 		dest = "/dev/null (verify only, nothing written)"
 	}
-	t.Logf("decrypted %d files (~%d MiB) -> %s", nFiles, nBytes>>20, dest)
-	t.Logf("skipped: %d over size cap, %d incomplete (stored shorter than recorded), %d other errors", nCapped, nIncomplete, nErrors)
+	t.Logf("materialized %d files (~%d MiB) -> %s (%d complete, %d recovered-partial)", nFiles, nBytes>>20, dest, nFiles-nIncomplete, nIncomplete)
+	t.Logf("skipped: %d over size cap, %d other errors", nCapped, nErrors)
 }
 
 // TestRealBackupOpen is a password-free smoke test: it parses a real Manifest.plist and
