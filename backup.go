@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	_ "modernc.org/sqlite" // register the cgo-free "sqlite" driver
 
@@ -44,6 +45,16 @@ type FileEntry struct {
 	Domain       string
 	RelativePath string
 	Flags        int64 // 1 = file, 2 = directory, 4 = symlink (iOS convention)
+
+	// Size is the file's recorded length in bytes — the plaintext length, which is what
+	// DecryptFile truncates its output to. Directories and symlinks record 0.
+	Size int64
+
+	// MTime is the file's last-modified time, or the ZERO Time when the record carries
+	// none. Absent is ordinary rather than corrupt: the field is optional in the format and
+	// the reference implementation guards every use of it. Check IsZero; do not read a zero
+	// value as 1970.
+	MTime time.Time
 }
 
 // Info summarizes the backed-up device.
@@ -173,6 +184,18 @@ func (b *Backup) Close() error {
 // relativePath prefix (empty = any), ordered by domain then relativePath. Iteration
 // stops on the first error; call Err afterwards to retrieve it. The backup must be
 // unlocked.
+//
+// IT DECODES ONE NSKeyedArchiver BLOB PER ROW, and that is the dominant cost of a walk.
+// Size and MTime live only in the `file` column's plist — there is no cheaper source, and
+// the reference implementation pays the same price per file. Callers walking a large
+// manifest for names alone are paying for metadata they may not want; if that ever matters
+// enough to measure, the answer is a second method, not a silently cheaper List.
+//
+// A ROW WHOSE RECORD WILL NOT DECODE IS STILL YIELDED, with Size 0 and a zero MTime, and
+// the error is reported through Err. The alternative — stopping the walk — would make one
+// unreadable record hide every file after it in a backup a user is trying to browse, which
+// is a worse failure than an entry with missing metadata. Err is how a caller learns the
+// listing was imperfect; it is not a reason to discard the part that worked.
 func (b *Backup) List(domain, prefix string) iter.Seq[FileEntry] {
 	return func(yield func(FileEntry) bool) {
 		b.err = nil
@@ -181,7 +204,7 @@ func (b *Backup) List(domain, prefix string) iter.Seq[FileEntry] {
 			return
 		}
 
-		q := "SELECT fileID, domain, relativePath, flags FROM Files"
+		q := "SELECT fileID, domain, relativePath, flags, file FROM Files"
 		var conds []string
 		var args []any
 		if domain != "" {
@@ -206,9 +229,16 @@ func (b *Backup) List(domain, prefix string) iter.Seq[FileEntry] {
 
 		for rows.Next() {
 			var e FileEntry
-			if err := rows.Scan(&e.FileID, &e.Domain, &e.RelativePath, &e.Flags); err != nil {
+			var blob []byte
+			if err := rows.Scan(&e.FileID, &e.Domain, &e.RelativePath, &e.Flags, &blob); err != nil {
 				b.err = err
 				return
+			}
+			// A record that will not decode costs this entry its metadata, not the walk.
+			if rec, err := decodeFileRecord(blob); err != nil {
+				b.err = fmt.Errorf("iosbackup: file record for %s: %w", e.FileID, err)
+			} else {
+				e.Size, e.MTime = rec.size, rec.mtime
 			}
 			if !yield(e) {
 				return
@@ -224,20 +254,32 @@ func (b *Backup) List(domain, prefix string) iter.Seq[FileEntry] {
 func (b *Backup) Err() error { return b.err }
 
 // Stat returns the Files-table row for the given fileID. The backup must be unlocked.
+// Like List, it decodes the row's NSKeyedArchiver record to fill Size and MTime — for one
+// row that cost is negligible.
+//
+// Unlike List, a record that will not decode is an ERROR here rather than a partial entry:
+// Stat is a question about one file, so answering it with silently-missing metadata would
+// give the caller no way to tell "this file has no mtime" from "this record is broken".
 func (b *Backup) Stat(fileID string) (FileEntry, error) {
 	if b.db == nil {
 		return FileEntry{}, ErrLocked
 	}
 	var e FileEntry
+	var blob []byte
 	err := b.db.
-		QueryRow("SELECT fileID, domain, relativePath, flags FROM Files WHERE fileID = ? LIMIT 1", fileID).
-		Scan(&e.FileID, &e.Domain, &e.RelativePath, &e.Flags)
+		QueryRow("SELECT fileID, domain, relativePath, flags, file FROM Files WHERE fileID = ? LIMIT 1", fileID).
+		Scan(&e.FileID, &e.Domain, &e.RelativePath, &e.Flags, &blob)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		return FileEntry{}, ErrFileNotFound
 	case err != nil:
 		return FileEntry{}, err
 	}
+	rec, err := decodeFileRecord(blob)
+	if err != nil {
+		return FileEntry{}, fmt.Errorf("iosbackup: file record for %s: %w", fileID, err)
+	}
+	e.Size, e.MTime = rec.size, rec.mtime
 	return e, nil
 }
 

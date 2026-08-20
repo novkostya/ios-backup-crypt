@@ -2,13 +2,16 @@ package iosbackup
 
 import (
 	"fmt"
+	"time"
 
 	"howett.net/plist"
 )
 
-// fileRecord is the decrypt-relevant subset of a Files.file NSKeyedArchiver blob.
+// fileRecord is the decrypt-relevant subset of a Files.file NSKeyedArchiver blob, plus the
+// two metadata fields a caller needs to describe a file without decrypting it.
 type fileRecord struct {
 	size            int64
+	mtime           time.Time // zero when the record carries no LastModified — see below
 	protectionClass uint32
 	encryptionKey   []byte // 40-byte wrapped key (class prefix stripped); nil if none
 }
@@ -48,6 +51,15 @@ func decodeFileRecord(blob []byte) (fileRecord, error) {
 		return fileRecord{}, fmt.Errorf("iosbackup: file record missing Size")
 	}
 	rec.size = size
+
+	// LastModified is a Unix timestamp in seconds, and it is OPTIONAL. The reference
+	// implementation reads it with a plain `.get()` and guards every use with
+	// `if file_plist.mtime:` — so a record without one is ordinary, not corrupt, and a
+	// missing timestamp must never fail a decode that is otherwise fine. Callers get the
+	// zero Time and can tell the difference with IsZero.
+	if ms, ok := asInt64(mb["LastModified"]); ok {
+		rec.mtime = time.Unix(ms, 0).UTC()
+	}
 	if pc, ok := asInt64(mb["ProtectionClass"]); ok {
 		rec.protectionClass = uint32(pc)
 	}
