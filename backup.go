@@ -72,14 +72,42 @@ type Backup struct {
 	manifest *manifestPlist
 	keybag   *keybag.Keybag
 
+	// scratchDir is where the decrypted Manifest.db is written. Empty means the OS
+	// temporary directory, which is Go's os.CreateTemp default and this library's
+	// historical behavior.
+	scratchDir string
+
 	db     *sql.DB
 	dbPath string // temp decrypted Manifest.db, removed by Close
 	err    error  // last List iteration error, surfaced via Err
 }
 
+// An Option configures a Backup at Open time.
+type Option func(*Backup)
+
+// WithScratchDir directs the decrypted Manifest.db to dir instead of the OS temporary
+// directory. The directory must already exist; Open does not create it.
+//
+// WHY A CALLER WOULD WANT THIS, since the default works. Unlock decrypts Manifest.db to
+// disk, and that file is the complete file index of somebody's phone in plaintext: every
+// domain, every path. Close removes it, and Close runs on a clean exit — not on a SIGKILL,
+// an OOM, or a panic in a caller's own goroutine.
+//
+// A caller that already owns a directory it wipes — one it clears on start as well as on
+// teardown — can cover the crash case, which no amount of care inside this library can. It
+// cannot do that for a path it does not choose. That is the whole of the feature: not
+// "somewhere else", but "somewhere the caller has already promised to clean".
+//
+// It is an OPTION rather than a required argument because the default is correct for the
+// ordinary case and this library's public surface is meant to stay small: Open(dir) keeps
+// compiling and keeps meaning what it meant.
+func WithScratchDir(dir string) Option {
+	return func(b *Backup) { b.scratchDir = dir }
+}
+
 // Open reads <backupDir>/Manifest.plist and parses the keybag. The returned Backup is
 // locked; call Unlock with the backup password before reading files.
-func Open(backupDir string) (*Backup, error) {
+func Open(backupDir string, opts ...Option) (*Backup, error) {
 	mp, err := readManifestPlist(backupDir)
 	if err != nil {
 		return nil, err
@@ -94,7 +122,11 @@ func Open(backupDir string) (*Backup, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Backup{dir: backupDir, manifest: mp, keybag: kb}, nil
+	b := &Backup{dir: backupDir, manifest: mp, keybag: kb}
+	for _, opt := range opts {
+		opt(b)
+	}
+	return b, nil
 }
 
 // Unlock derives the key-encryption key from the password, unwraps the class keys and
@@ -137,9 +169,10 @@ func (b *Backup) Unlock(password string) error {
 }
 
 // decryptManifestDB streams <dir>/Manifest.db through AES-CBC into a fresh temp file and
-// returns its path.
+// returns its path. The file lands in the Backup's scratchDir, or the OS temporary
+// directory when none was set — see WithScratchDir for why a caller might care.
 func (b *Backup) decryptManifestDB(manifestKey []byte) (string, error) {
-	tmp, err := os.CreateTemp("", "iosbackup-manifest-*.db")
+	tmp, err := os.CreateTemp(b.scratchDir, "iosbackup-manifest-*.db")
 	if err != nil {
 		return "", err
 	}
