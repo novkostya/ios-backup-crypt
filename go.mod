@@ -21,3 +21,10 @@ require (
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
 )
+
+// The fixture generator is a separate module in this repository (see fixture/go.mod). The
+// root's own tests use it to build the backups they decrypt, so the dependency runs both
+// ways and both directions are resolved by replace.
+require github.com/novkostya/ios-backup-crypt/fixture v0.0.0
+
+replace github.com/novkostya/ios-backup-crypt/fixture => ./fixture

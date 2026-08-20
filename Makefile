@@ -58,14 +58,20 @@ tc-go-force: preflight ## Rebuild the Go toolchain image (run after a versions.e
 
 .PHONY: gates
 gates: tc-go ## Run the gate: gofmt -l (empty) + go vet + golangci-lint + go test -race
+# EVERY MODULE, NOT EVERY PACKAGE. `./...` stops at a module boundary, so the fixture
+# module's packages are invisible to a root-level `go test ./...` — a gate that looked
+# green while testing none of it. `gofmt -l .` DOES recurse the whole tree (it walks
+# directories, not modules), which is exactly the asymmetry that makes this easy to get
+# wrong: one of the four checks would have kept working and the other three would not.
 	$(RUN) -w /src \
 	  -v $(GO_BUILD_VOL):/root/.cache/go-build -v $(GO_MOD_VOL):/go/pkg/mod \
 	  -e CGO_ENABLED=1 -e GOTOOLCHAIN=local $(TC_GO) sh -euc '\
 	    unformatted=$$(gofmt -l .); \
 	    if [ -n "$$unformatted" ]; then echo "gofmt needs to run on:"; echo "$$unformatted"; exit 1; fi; \
-	    go vet ./...; \
-	    golangci-lint run; \
-	    go test -race ./...'
+	    for mod in . ./fixture; do \
+	      echo "=== module $$mod ==="; \
+	      ( cd "$$mod" && go vet ./... && golangci-lint run && go test -race ./... ); \
+	    done'
 
 .PHONY: gates-all
 gates-all: gates gates-diff ## The full ladder: the Go gate + the differential (rung 3)
