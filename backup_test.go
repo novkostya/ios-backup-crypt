@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"howett.net/plist"
@@ -137,5 +138,133 @@ func TestOpenNotEncrypted(t *testing.T) {
 func TestOpenMissingBackup(t *testing.T) {
 	if _, err := Open(t.TempDir()); err == nil {
 		t.Fatalf("Open(empty dir): got nil, want error")
+	}
+}
+
+// WithScratchDir puts the decrypted index where the caller says, and Close removes it.
+//
+// THE CONTROL IS THE OTHER HALF: without the option the file must NOT appear there. A test
+// that only checks the positive would pass against an implementation that wrote to both
+// places, or to neither and left the assertion vacuous — the directory is empty at the end
+// either way, because Close cleans up.
+func TestWithScratchDirPutsTheDecryptedIndexWhereAsked(t *testing.T) {
+	dir := t.TempDir()
+	res, err := builder.Build(dir, builder.Spec{
+		Files: []builder.File{{Domain: "HomeDomain", RelativePath: "a", Flags: 1, Data: []byte("aaa")}},
+	})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+
+	scratch := t.TempDir()
+	b, err := Open(dir, WithScratchDir(scratch))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if err := b.Unlock(res.Password); err != nil {
+		t.Fatalf("Unlock: %v", err)
+	}
+
+	entries, err := os.ReadDir(scratch)
+	if err != nil {
+		t.Fatalf("reading the scratch dir: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("scratch holds %d entries, want exactly the decrypted index", len(entries))
+	}
+	if !strings.HasPrefix(entries[0].Name(), "iosbackup-manifest-") {
+		t.Errorf("scratch holds %q, which is not the decrypted index", entries[0].Name())
+	}
+
+	// It is a real, readable database while the backup is unlocked — not merely a file with
+	// the right name.
+	if _, err := b.Stat(res.Files[0].FileID); err != nil {
+		t.Errorf("the backup is not usable with a caller-chosen scratch dir: %v", err)
+	}
+
+	if err := b.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	entries, err = os.ReadDir(scratch)
+	if err != nil {
+		t.Fatalf("re-reading the scratch dir: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("Close left %d entries in the scratch dir, want none", len(entries))
+	}
+}
+
+// The control for the test above: with no option, nothing lands in that directory.
+func TestWithoutTheOptionTheScratchDirStaysEmpty(t *testing.T) {
+	dir := t.TempDir()
+	res, err := builder.Build(dir, builder.Spec{
+		Files: []builder.File{{Domain: "HomeDomain", RelativePath: "a", Flags: 1, Data: []byte("aaa")}},
+	})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+
+	notScratch := t.TempDir()
+	b, err := Open(dir) // no option — the default is the OS temp dir
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = b.Close() }()
+	if err := b.Unlock(res.Password); err != nil {
+		t.Fatalf("Unlock: %v", err)
+	}
+
+	entries, err := os.ReadDir(notScratch)
+	if err != nil {
+		t.Fatalf("reading the directory: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("a directory nobody named holds %d entries; the option is not what decided the location", len(entries))
+	}
+}
+
+// Open with no options keeps meaning what it meant — the variadic must not change the
+// zero-option call.
+func TestOpenWithoutOptionsIsUnchanged(t *testing.T) {
+	dir := t.TempDir()
+	res, err := builder.Build(dir, builder.Spec{
+		Files: []builder.File{{Domain: "HomeDomain", RelativePath: "a", Flags: 1, Data: []byte("aaa")}},
+	})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	b, err := Open(dir)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = b.Close() }()
+	if err := b.Unlock(res.Password); err != nil {
+		t.Fatalf("Unlock: %v", err)
+	}
+	if _, err := b.Stat(res.Files[0].FileID); err != nil {
+		t.Errorf("Stat after a plain Open: %v", err)
+	}
+}
+
+// A scratch directory that does not exist is a refusal with a reason, not a silent
+// fallback to the OS temp dir — which would put plaintext somewhere the caller does not
+// wipe while reporting success.
+func TestAMissingScratchDirIsRefusedNotIgnored(t *testing.T) {
+	dir := t.TempDir()
+	res, err := builder.Build(dir, builder.Spec{
+		Files: []builder.File{{Domain: "HomeDomain", RelativePath: "a", Flags: 1, Data: []byte("aaa")}},
+	})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+
+	b, err := Open(dir, WithScratchDir(filepath.Join(t.TempDir(), "does-not-exist")))
+	if err != nil {
+		t.Fatalf("Open should not validate the directory: %v", err)
+	}
+	defer func() { _ = b.Close() }()
+
+	if err := b.Unlock(res.Password); err == nil {
+		t.Error("Unlock succeeded with a nonexistent scratch dir; it must refuse rather than fall back")
 	}
 }
