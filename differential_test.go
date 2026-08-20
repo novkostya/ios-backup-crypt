@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/novkostya/ios-backup-crypt/internal/builder"
+	"github.com/novkostya/ios-backup-crypt/fixture"
 )
 
 // diffIndex is written to <DIFF_OUT>/index.json so the Python comparator
@@ -37,7 +37,7 @@ func TestWriteDifferentialFixture(t *testing.T) {
 		t.Skip("DIFF_OUT not set; run via `make gates-diff`")
 	}
 
-	files := []builder.File{
+	files := []fixture.File{
 		{Domain: "HomeDomain", RelativePath: "Library/SMS/sms.db", Flags: 1, Data: pattern(1500)},
 		{Domain: "AppDomain-com.example.app", RelativePath: "Documents/notes.txt", Flags: 1, Data: []byte("the quick brown fox jumps over the lazy dog\n")},
 		{Domain: "CameraRollDomain", RelativePath: "Media/DCIM/100APPLE/IMG_0001.JPG", Flags: 1, Data: pattern(200000)},
@@ -50,7 +50,7 @@ func TestWriteDifferentialFixture(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	res, err := builder.Build(backupDir, builder.Spec{
+	res, err := fixture.Build(backupDir, fixture.Spec{
 		Password:       "test",
 		DeviceName:     "Differential iPhone",
 		ProductVersion: "17.5.1",

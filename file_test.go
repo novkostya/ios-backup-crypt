@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/novkostya/ios-backup-crypt/internal/builder"
+	"github.com/novkostya/ios-backup-crypt/fixture"
 )
 
 // TestDecryptFileRoundTrip is the milestone-3 proof: files written by the builder decrypt
@@ -24,9 +24,9 @@ func TestDecryptFileRoundTrip(t *testing.T) {
 	empty := []byte{} // zero-length file (still gets a full padding block)
 
 	dir := t.TempDir()
-	res, err := builder.Build(dir, builder.Spec{
+	res, err := fixture.Build(dir, fixture.Spec{
 		Password: "test",
-		Files: []builder.File{
+		Files: []fixture.File{
 			{Domain: "HomeDomain", RelativePath: "small.txt", Flags: 1, Data: small},
 			{Domain: "HomeDomain", RelativePath: "aligned.bin", Flags: 1, Data: aligned},
 			{Domain: "HomeDomain", RelativePath: "big.bin", Flags: 1, Data: big},
@@ -75,8 +75,8 @@ func TestDecryptFileRoundTrip(t *testing.T) {
 // DecryptFile must report ErrIncompleteFile rather than a generic error.
 func TestDecryptFileIncomplete(t *testing.T) {
 	dir := t.TempDir()
-	res, err := builder.Build(dir, builder.Spec{
-		Files: []builder.File{{Domain: "HomeDomain", RelativePath: "live.db", Flags: 1, Data: bytes.Repeat([]byte{0x7}, 4096)}},
+	res, err := fixture.Build(dir, fixture.Spec{
+		Files: []fixture.File{{Domain: "HomeDomain", RelativePath: "live.db", Flags: 1, Data: bytes.Repeat([]byte{0x7}, 4096)}},
 	})
 	if err != nil {
 		t.Fatalf("Build: %v", err)
@@ -108,8 +108,8 @@ func TestDecryptFileIncomplete(t *testing.T) {
 
 func TestDecryptFileLocked(t *testing.T) {
 	dir := t.TempDir()
-	res, err := builder.Build(dir, builder.Spec{
-		Files: []builder.File{{Domain: "HomeDomain", RelativePath: "a", Flags: 1, Data: []byte("x")}},
+	res, err := fixture.Build(dir, fixture.Spec{
+		Files: []fixture.File{{Domain: "HomeDomain", RelativePath: "a", Flags: 1, Data: []byte("x")}},
 	})
 	if err != nil {
 		t.Fatalf("Build: %v", err)

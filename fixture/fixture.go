@@ -1,12 +1,28 @@
-// Package builder constructs a tiny synthetic *encrypted* iOS backup on disk: a valid
-// keybag, a wrapped Manifest key, an AES-CBC-encrypted Manifest.db (a real SQLite
-// database with a Files table), and a binary Manifest.plist. It is the self-contained
-// fixture generator behind the round-trip tests — it never ships in the library's
-// public API (hence internal/).
+// Package fixture constructs a synthetic *encrypted* iOS backup on disk: a valid keybag,
+// a wrapped Manifest key, an AES-CBC-encrypted Manifest.db (a real SQLite database with a
+// Files table), and a binary Manifest.plist. The encrypt path here is the mirror image of
+// the library's decrypt path, so a backup this package writes is exactly what the library
+// must be able to read back.
 //
-// The encrypt path here is the mirror image of the library's decrypt path, so a backup
-// this package writes is exactly what the library must be able to read back.
-package builder
+// IT IS PUBLIC, AND THAT IS A DECISION RATHER THAN AN OVERSIGHT. It lived under internal/
+// with a comment saying it would never ship, on the ordinary and good reasoning that test
+// scaffolding is not API. The case that overturned it: a real encrypted backup is somebody's
+// personal data and must never enter a CI run, so a *consumer* of this library that wants
+// to test its own code against real encrypted-backup structure has no other way to get one.
+// This library already makes exactly that argument for its own operator-local differential;
+// the same argument holds one layer up, and nothing else can satisfy it — an encrypt path is
+// the only thing that produces a backup a decrypt path can read.
+//
+// IT IS A SEPARATE PACKAGE SO THE DECRYPTION API STAYS EXACTLY AS SMALL AS IT WAS.
+// Importing this is opt-in; a consumer that only decrypts never sees it, and CONTRIBUTING's
+// "keep the public API small" is honored for the surface that rule is about.
+//
+// IT IS TEST SUPPORT, NOT A BACKUP WRITER, and the distinction bounds what it promises. It
+// builds inputs for tests: small files, small KDF work factors, one protection class. It is
+// not a tool for producing a backup anything should restore from, and its stability promise
+// is the weaker one that goes with that — the decryption API is what this module's version
+// number is about.
+package fixture
 
 import (
 	"bytes"
