@@ -13,9 +13,10 @@
 // the same argument holds one layer up, and nothing else can satisfy it — an encrypt path is
 // the only thing that produces a backup a decrypt path can read.
 //
-// IT IS A SEPARATE PACKAGE SO THE DECRYPTION API STAYS EXACTLY AS SMALL AS IT WAS.
-// Importing this is opt-in; a consumer that only decrypts never sees it, and CONTRIBUTING's
-// "keep the public API small" is honored for the surface that rule is about.
+// IT IS A SEPARATE MODULE SO THE DECRYPTION API STAYS EXACTLY AS SMALL AS IT WAS — see
+// fixture/go.mod. Importing this is opt-in, and `github.com/novkostya/ios-backup-crypt`
+// gains no exported identifier at all, so CONTRIBUTING's "keep the public API small" holds
+// literally rather than by argument.
 //
 // IT IS TEST SUPPORT, NOT A BACKUP WRITER, and the distinction bounds what it promises. It
 // builds inputs for tests: small files, small KDF work factors, one protection class. It is
