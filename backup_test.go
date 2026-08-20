@@ -8,7 +8,7 @@ import (
 
 	"howett.net/plist"
 
-	"github.com/novkostya/ios-backup-crypt/internal/builder"
+	"github.com/novkostya/ios-backup-crypt/fixture"
 	"github.com/novkostya/ios-backup-crypt/internal/keybag"
 )
 
@@ -17,18 +17,18 @@ import (
 // table is read back via List and Stat.
 func TestOpenUnlockRoundTrip(t *testing.T) {
 	dir := t.TempDir()
-	spec := builder.Spec{
+	spec := fixture.Spec{
 		Password:       "test",
 		DeviceName:     "Test iPhone",
 		ProductVersion: "17.5.1",
-		Files: []builder.File{
+		Files: []fixture.File{
 			{Domain: "AppDomain-com.example.app", RelativePath: "Documents/a.txt", Flags: 1},
 			{Domain: "AppDomain-com.example.app", RelativePath: "Documents/b.txt", Flags: 1},
 			{Domain: "AppDomain-com.example.app", RelativePath: "Documents", Flags: 2},
 			{Domain: "HomeDomain", RelativePath: "Library/SMS/sms.db", Flags: 1},
 		},
 	}
-	res, err := builder.Build(dir, spec)
+	res, err := fixture.Build(dir, spec)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -104,9 +104,9 @@ func TestOpenUnlockRoundTrip(t *testing.T) {
 
 func TestUnlockWrongPassword(t *testing.T) {
 	dir := t.TempDir()
-	if _, err := builder.Build(dir, builder.Spec{
+	if _, err := fixture.Build(dir, fixture.Spec{
 		Password: "correct-horse",
-		Files:    []builder.File{{Domain: "HomeDomain", RelativePath: "x", Flags: 1}},
+		Files:    []fixture.File{{Domain: "HomeDomain", RelativePath: "x", Flags: 1}},
 	}); err != nil {
 		t.Fatalf("Build: %v", err)
 	}
