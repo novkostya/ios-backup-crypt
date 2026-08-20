@@ -33,6 +33,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	_ "modernc.org/sqlite" // register the cgo-free "sqlite" driver
 
@@ -59,6 +60,24 @@ type File struct {
 	RelativePath string
 	Flags        int64 // 1 = file, 2 = directory (iOS convention)
 	Data         []byte
+
+	// MTime, when non-zero, is written as the record's LastModified. Left zero, the record
+	// carries NO LastModified at all — which is the case a consumer most needs to be able to
+	// build, because the field is optional in the real format and "absent" is the state that
+	// gets mishandled. A fixture that could only produce records WITH a timestamp could not
+	// test the branch that matters.
+	MTime time.Time
+
+	// BadRecord writes an UNDECODABLE `file` blob for this row instead of a valid
+	// NSKeyedArchiver record. The row still appears in the Files table with its domain,
+	// path and flags; only its metadata is unreadable.
+	//
+	// A fixture generator exists to build inputs for tests, and the inputs hardest to come
+	// by are the broken ones — a real backup with a corrupt record is not something anybody
+	// can produce on demand, and the handling of one is exactly the behavior nobody
+	// exercises until it happens. Data is ignored when this is set: there is no key to
+	// encrypt with once the record is gone.
+	BadRecord bool
 }
 
 // Spec describes the synthetic backup to build.
@@ -271,10 +290,20 @@ func buildManifestDB(dir string, classKey []byte, files []File) ([]WrittenFile, 
 // EncryptionKey object, and writes the AES-CBC-encrypted (PKCS#7-padded) content to
 // <dir>/<id[:2]>/<id>. Directories get a keyless, size-0 record.
 func buildFileRecord(dir, id string, classKey []byte, f File) ([]byte, error) {
+	if f.BadRecord {
+		// Deliberately not a plist. The row is otherwise ordinary, which is the point:
+		// everything but the metadata is still readable.
+		return []byte("this is not an NSKeyedArchiver blob"), nil
+	}
 	record := map[string]any{
 		"Size":            len(f.Data),
 		"ProtectionClass": int(protectionClass),
 		"RelativePath":    f.RelativePath,
+	}
+	// Written ONLY when set, so that a zero MTime produces a record with no LastModified
+	// key at all — the optional-field case a consumer needs to be able to construct.
+	if !f.MTime.IsZero() {
+		record["LastModified"] = f.MTime.Unix()
 	}
 	objects := []any{"$null", record}
 
