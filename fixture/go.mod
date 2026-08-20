@@ -23,7 +23,15 @@ module github.com/novkostya/ios-backup-crypt/fixture
 
 go 1.25.0
 
-require github.com/novkostya/ios-backup-crypt v0.1.1
+// THIS VERSION IS LOAD-BEARING AND THE `replace` BELOW HIDES IT. Locally the replace
+// points at ../ and this number is never consulted; for a CONSUMER it is the only thing
+// that decides which root module gets compiled in. It read v0.1.1 when fixture/v0.1.0 was
+// cut, so a consumer got an internal/builder predating File.MTime and File.BadRecord and
+// failed with "unknown field MTime in struct literal" — while every local build passed.
+//
+// Bump it in the same change that adds anything to the generator. The gate cannot catch
+// this: `make gates` runs inside the replace, which is the whole problem.
+require github.com/novkostya/ios-backup-crypt v0.2.0
 
 require (
 	github.com/dustin/go-humanize v1.0.1 // indirect
