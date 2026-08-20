@@ -13,7 +13,11 @@
 
 # --- Real-backup material: NEVER committed (personal data; ladder rung 4 is env-driven) ---
 # The real-backup differential test reads a path from an env var; nothing local is tracked.
-/local/
+/local
+# NO TRAILING SLASH, and that is the whole of it: `/local/` matches a DIRECTORY only, and
+# the private layer is normally linked in as a SYMLINK, which git treats as a file. The
+# slash-terminated form ignored a real directory and silently tracked the link — caught one
+# amend before a push to a public repo.
 /testdata/real/
 
 # --- Claude Code machine-local settings ---
