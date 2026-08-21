@@ -87,8 +87,23 @@ type Spec struct {
 	ProductVersion string // → Manifest.plist Lockdown.ProductVersion (iOS version)
 	Files          []File
 	// KDF work factors — kept small so tests are fast (real backups use DPIC ≈ 1e7).
-	// Zero values default to DPIC=4096, ITER=4096.
+	// Zero values default to DPIC=4096, ITER=4096. Ignored when Unencrypted.
 	DPIC, ITER uint32
+
+	// Unencrypted builds a backup with NO encryption anywhere: a plain SQLite Manifest.db,
+	// a Manifest.plist with IsEncrypted false and neither BackupKeyBag nor ManifestKey, and
+	// plaintext on-disk blobs. Password, DPIC and ITER are ignored.
+	//
+	// IT IS THE SAME FILE RECORDS, and that is the point of building it here rather than in
+	// a consumer. Measured on a real unencrypted iPad backup: the `Files` schema is
+	// identical and each `file` blob is the same NSKeyedArchiver MBFile graph, carrying
+	// Size, LastModified, ProtectionClass, Flags, Mode, Birth, RelativePath, InodeNumber,
+	// UserID and GroupID — the ONLY difference is that EncryptionKey is absent, which is
+	// already how this builder writes a directory. A consumer that needed an unencrypted
+	// fixture would otherwise have to write MBFile records itself, which is a second WRITER
+	// of the format to sit beside the second READER that #8 exists to prevent. A fixture
+	// that builds records slightly wrong makes a conformance suite agree with a bug.
+	Unencrypted bool
 }
 
 // WrittenFile records a row placed in the Files table, including its computed fileID.
@@ -105,8 +120,15 @@ type Result struct {
 	Files    []WrittenFile
 }
 
-// Build writes Manifest.plist and an encrypted Manifest.db into dir.
+// Build writes Manifest.plist and a Manifest.db into dir — encrypted, or plaintext when
+// Spec.Unencrypted is set.
 func Build(dir string, spec Spec) (*Result, error) {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return nil, err
+	}
+	if spec.Unencrypted {
+		return buildUnencrypted(dir, spec)
+	}
 	if spec.Password == "" {
 		spec.Password = DefaultPassword
 	}
@@ -115,9 +137,6 @@ func Build(dir string, spec Spec) (*Result, error) {
 	}
 	if spec.ITER == 0 {
 		spec.ITER = 4096
-	}
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return nil, err
 	}
 
 	// Random salts + keys.
@@ -308,23 +327,33 @@ func buildFileRecord(dir, id string, classKey []byte, f File) ([]byte, error) {
 	objects := []any{"$null", record}
 
 	if f.Data != nil {
-		fileKey, err := randBytes(32)
-		if err != nil {
-			return nil, err
-		}
-		wrapped, err := aeskw.Wrap(classKey, fileKey)
-		if err != nil {
-			return nil, err
-		}
-		encKeyData := make([]byte, 4+len(wrapped))
-		binary.LittleEndian.PutUint32(encKeyData[:4], protectionClass)
-		copy(encKeyData[4:], wrapped)
+		if classKey == nil {
+			// UNENCRYPTED: the blob goes down as plaintext and the record carries NO
+			// EncryptionKey — which is exactly the keyless shape this function already
+			// writes for a directory, and exactly what a real unencrypted backup holds for
+			// every entry including ordinary files.
+			if err := writePlainBlob(dir, id, f.Data); err != nil {
+				return nil, err
+			}
+		} else {
+			fileKey, err := randBytes(32)
+			if err != nil {
+				return nil, err
+			}
+			wrapped, err := aeskw.Wrap(classKey, fileKey)
+			if err != nil {
+				return nil, err
+			}
+			encKeyData := make([]byte, 4+len(wrapped))
+			binary.LittleEndian.PutUint32(encKeyData[:4], protectionClass)
+			copy(encKeyData[4:], wrapped)
 
-		objects = append(objects, map[string]any{"NS.data": encKeyData})
-		record["EncryptionKey"] = plist.UID(len(objects) - 1)
+			objects = append(objects, map[string]any{"NS.data": encKeyData})
+			record["EncryptionKey"] = plist.UID(len(objects) - 1)
 
-		if err := writeEncryptedBlob(dir, id, fileKey, f.Data); err != nil {
-			return nil, err
+			if err := writeEncryptedBlob(dir, id, fileKey, f.Data); err != nil {
+				return nil, err
+			}
 		}
 	}
 
@@ -399,4 +428,55 @@ func randBytes(n int) ([]byte, error) {
 		return nil, err
 	}
 	return b, nil
+}
+
+// buildUnencrypted writes a backup with no encryption anywhere: a plain SQLite Manifest.db,
+// plaintext on-disk blobs, and a Manifest.plist declaring IsEncrypted false with neither a
+// keybag nor a ManifestKey.
+//
+// It shares buildManifestDB and buildFileRecord with the encrypted path rather than
+// duplicating them — a nil classKey is the whole of the difference — so the two kinds of
+// fixture cannot drift in the one thing a consumer reads from both: the file record.
+func buildUnencrypted(dir string, spec Spec) (*Result, error) {
+	written, dbBytes, err := buildManifestDB(dir, nil, spec.Files)
+	if err != nil {
+		return nil, err
+	}
+	// Written as-is: no cipher, so no block alignment to satisfy and no padding. That is
+	// also why a consumer can check a recorded Size against the on-disk length here and
+	// cannot on an encrypted backup, where the blob is padded.
+	if err := os.WriteFile(filepath.Join(dir, "Manifest.db"), dbBytes, 0o600); err != nil {
+		return nil, err
+	}
+
+	mp := map[string]any{
+		"IsEncrypted": false,
+		"Version":     "10.0",
+		"Lockdown": map[string]any{
+			"DeviceName":     spec.DeviceName,
+			"ProductVersion": spec.ProductVersion,
+		},
+	}
+	plistBytes, err := plist.Marshal(mp, plist.BinaryFormat)
+	if err != nil {
+		return nil, err
+	}
+	if err := os.WriteFile(filepath.Join(dir, "Manifest.plist"), plistBytes, 0o600); err != nil {
+		return nil, err
+	}
+
+	// Password is empty rather than DefaultPassword: there is nothing to unlock, and
+	// returning a password for a backup that takes none is the "field that silently
+	// validates nothing" the seam refuses to have.
+	return &Result{Files: written}, nil
+}
+
+// writePlainBlob writes data verbatim to <dir>/<id[:2]>/<id> — the unencrypted backup's
+// on-disk form, where the stored length IS the plaintext length.
+func writePlainBlob(dir, id string, data []byte) error {
+	sub := filepath.Join(dir, id[:2])
+	if err := os.MkdirAll(sub, 0o700); err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(sub, id), data, 0o600)
 }
