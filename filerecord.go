@@ -108,3 +108,58 @@ func asUID(v any) (uint64, bool) {
 		return 0, false
 	}
 }
+
+// FileRecord is what a Files.file blob says ABOUT a file, as distinct from the file's
+// content: the two metadata fields a caller needs in order to describe an entry without
+// decrypting anything.
+//
+// A struct rather than two return values because the record carries more than this — Flags,
+// Mode, Birth, InodeNumber, UserID, GroupID, ExtendedAttributes and, for symlinks, Target —
+// and a caller that later needs one of them should get a field rather than a fourth return.
+type FileRecord struct {
+	// Size is the recorded plaintext length in bytes. Directories and symlinks record 0.
+	Size int64
+
+	// MTime is the last-modified time, or the ZERO Time when the record carries none.
+	// Absent is ordinary rather than corrupt — the field is optional in the format and the
+	// reference implementation guards every use of it. Check IsZero; do not read a zero
+	// value as 1970. (Identical to FileEntry.MTime, deliberately.)
+	MTime time.Time
+}
+
+// DecodeFileRecord reads the metadata out of one Files.file blob.
+//
+// WHY A DECRYPTION LIBRARY EXPORTS THIS, since the charter says the scope is decrypting
+// encrypted backups and this function decrypts nothing: the MBFile record is the FILE-RECORD
+// FORMAT, not a decryption step. An unencrypted backup's Manifest.db is plain SQLite that any
+// caller can open, but Size and MTime are not columns in it — they live inside this blob, in
+// exactly the same NSKeyedArchiver shape, and decoding them is Apple-format parsing that is
+// needed identically whether or not a key was ever involved.
+//
+// So the alternative to exporting it is a second copy of this decoder in every consumer, and
+// two copies of a record decoder can disagree about a file's size — the encrypted path saying
+// one number and the unencrypted path another for the identical record. That is the
+// duplication argument this repository already accepted for the crypto in #4, applied to the
+// one piece that is not crypto at all. The charter is untouched: this library still only
+// decrypts, and a consumer reading a manifest nobody encrypted borrows the part that was
+// never about encryption. (novkostya/ios-backup-crypt#8.)
+//
+// MEASURED, on a real unencrypted iPad backup, 2026-08-21, across all three record kinds
+// (file, directory, symlink): the graph is identical to the encrypted case — bplist00,
+// NSKeyedArchiver, $top.root into an MBFile carrying Size, LastModified, ProtectionClass,
+// Flags, Mode, Birth, RelativePath, InodeNumber, UserID and GroupID. The ONLY difference is
+// that EncryptionKey is absent, which this decoder already treats as ordinary because that
+// is also the directory-and-symlink case. The issue proposing this export flagged "I have
+// not checked whether the record format differs" as the thing that could make the answer
+// bigger than an export; it does not differ, so it did not.
+//
+// It deliberately does NOT surface ProtectionClass or the wrapped EncryptionKey. Those ARE
+// decryption details, and exporting them would widen the charter this function is careful
+// not to touch.
+func DecodeFileRecord(blob []byte) (FileRecord, error) {
+	rec, err := decodeFileRecord(blob)
+	if err != nil {
+		return FileRecord{}, err
+	}
+	return FileRecord{Size: rec.size, MTime: rec.mtime}, nil
+}
