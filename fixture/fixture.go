@@ -44,7 +44,13 @@ type (
 	Result = builder.Result
 )
 
-// Build writes Manifest.plist and an encrypted Manifest.db into dir, plus one encrypted
-// blob per file with content. It returns the password the backup was built with and the
-// rows it placed, each with the fileID that addresses it.
+// Build writes Manifest.plist and a Manifest.db into dir, plus one on-disk blob per file
+// with content. It returns the password the backup was built with and the rows it placed,
+// each with the fileID that addresses it.
+//
+// Set Spec.Unencrypted for a backup with no encryption anywhere — plain SQLite index,
+// plaintext blobs, IsEncrypted false, and an empty Result.Password because there is nothing
+// to unlock. The file records are identical either way, which is what makes this the right
+// place to build one: a consumer needing an unencrypted fixture would otherwise write
+// NSKeyedArchiver MBFile records itself.
 func Build(dir string, spec Spec) (*Result, error) { return builder.Build(dir, spec) }
