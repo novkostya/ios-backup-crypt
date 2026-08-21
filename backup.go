@@ -29,6 +29,23 @@ var (
 	// ErrNotAFile reports a DecryptFile for a record with no encryption key — a
 	// directory or symlink, which has no decryptable content.
 	ErrNotAFile = errors.New("iosbackup: entry has no encrypted content (directory or symlink)")
+	// ErrBadPassword reports a password that does not unlock the backup's keybag.
+	//
+	// IT IS THE ONE ERROR A CALLER'S USER CAN ACT ON, which is why it is a sentinel rather
+	// than left to the caller to recognize. Every other failure here means something is
+	// wrong with the backup or the machine; this one means retype it.
+	//
+	// The condition was always detected and always described — `keybag: wrong password (no
+	// class keys unwrapped)` — but only inside `internal/keybag`, so no consumer could match
+	// it with errors.Is and the honest thing for them to report was "something below failed".
+	// A consumer then faces two bad options: classify on message text, which breaks silently
+	// on any rewording here and misreads a genuine I/O failure as a wrong password, or answer
+	// with a 500 for a mistyped password. Exporting the sentinel is what removes the choice.
+	//
+	// THE UNDERLYING ERROR IS WRAPPED, NOT REPLACED, so `keybag.ErrWrongPassword` still
+	// matches for anything inside this module and the specific sentence survives into a
+	// caller's logs.
+	ErrBadPassword = errors.New("iosbackup: wrong backup password")
 	// ErrIncompleteFile reports that the recovered content is shorter than the size
 	// recorded in the file's metadata. Real backups contain such files when a file was
 	// still being written as the backup ran (e.g. a live database captured mid-write):
@@ -137,6 +154,20 @@ func (b *Backup) Unlock(password string) error {
 		return nil
 	}
 	if err := b.keybag.Unlock(password); err != nil {
+		// THE ONE FAILURE A USER CAN FIX, given its own sentinel at the module boundary.
+		// `internal/keybag` is unreachable from outside, so without this a consumer cannot
+		// tell a mistyped password from a corrupt keybag or a bad disk — and both of the
+		// options left to it are wrong (see ErrBadPassword).
+		//
+		// WRAPPED WITH BOTH, so `errors.Is` matches the public sentinel outside the module
+		// and the internal one inside it, and the keybag's own sentence survives.
+		//
+		// NARROW ON PURPOSE: ErrMissingKDFParams also arrives here and is NOT a wrong
+		// password — it is a keybag missing the attributes the KDF needs, which no retyping
+		// fixes. It stays unclassified rather than being folded in.
+		if errors.Is(err, keybag.ErrWrongPassword) {
+			return fmt.Errorf("%w: %w", ErrBadPassword, err)
+		}
 		return err
 	}
 	class, wrapped, err := splitManifestKey(b.manifest.ManifestKey)

@@ -116,8 +116,25 @@ func TestUnlockWrongPassword(t *testing.T) {
 		t.Fatalf("Open: %v", err)
 	}
 	t.Cleanup(func() { _ = b.Close() })
-	if err := b.Unlock("wrong"); !errors.Is(err, keybag.ErrWrongPassword) {
-		t.Fatalf("Unlock(wrong): got %v, want keybag.ErrWrongPassword", err)
+	// BOTH SENTINELS, AND THE PAIR IS THE POINT. `ErrBadPassword` is what a consumer outside
+	// this module can match — the whole reason it exists — and `keybag.ErrWrongPassword` is
+	// what the wrap must not have discarded. Asserting only the first would let a later
+	// refactor replace the cause with a bare sentinel and stay green, taking the specific
+	// sentence out of every consumer's logs.
+	err = b.Unlock("wrong")
+	if !errors.Is(err, ErrBadPassword) {
+		t.Fatalf("Unlock(wrong): got %v, want ErrBadPassword — the sentinel a consumer outside "+
+			"this module matches on, and the difference between telling a user to retype "+
+			"their password and telling them the backup is broken", err)
+	}
+	if !errors.Is(err, keybag.ErrWrongPassword) {
+		t.Errorf("Unlock(wrong) = %v: the underlying keybag error was replaced rather than "+
+			"wrapped, so its sentence no longer reaches a caller's logs", err)
+	}
+	// A CORRECT PASSWORD MUST NOT MATCH IT — the control, without which the two assertions
+	// above pass against a function that returns ErrBadPassword unconditionally.
+	if err := b.Unlock("correct-horse"); err != nil {
+		t.Fatalf("Unlock(correct): %v", err)
 	}
 }
 
