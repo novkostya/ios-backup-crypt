@@ -85,6 +85,16 @@ type Spec struct {
 	Password       string // defaults to DefaultPassword
 	DeviceName     string // → Manifest.plist Lockdown.DeviceName
 	ProductVersion string // → Manifest.plist Lockdown.ProductVersion (iOS version)
+
+	// The rest of Manifest.plist's Lockdown dict. Left zero, each is simply absent from the
+	// generated plist, which is the state a consumer most needs to be able to build: these
+	// fields are optional in the real format and a fixture that could only produce them
+	// PRESENT could not test the branch that reads one that is missing.
+	DeviceClass    string // → Lockdown.DeviceClass ("iPhone", "iPad", …)
+	ProductType    string // → Lockdown.ProductType (model identifier)
+	BuildVersion   string // → Lockdown.BuildVersion
+	SerialNumber   string // → Lockdown.SerialNumber
+	UniqueDeviceID string // → Lockdown.UniqueDeviceID
 	Files          []File
 	// KDF work factors — kept small so tests are fast (real backups use DPIC ≈ 1e7).
 	// Zero values default to DPIC=4096, ITER=4096. Ignored when Unencrypted.
@@ -200,10 +210,7 @@ func Build(dir string, spec Spec) (*Result, error) {
 		"BackupKeyBag": keybagBlob,
 		"ManifestKey":  manifestKeyField,
 		"Version":      "10.0",
-		"Lockdown": map[string]any{
-			"DeviceName":     spec.DeviceName,
-			"ProductVersion": spec.ProductVersion,
-		},
+		"Lockdown":     lockdownDict(spec),
 	}
 	plistBytes, err := plist.Marshal(mp, plist.BinaryFormat)
 	if err != nil {
@@ -485,10 +492,7 @@ func buildUnencrypted(dir string, spec Spec) (*Result, error) {
 	mp := map[string]any{
 		"IsEncrypted": false,
 		"Version":     "10.0",
-		"Lockdown": map[string]any{
-			"DeviceName":     spec.DeviceName,
-			"ProductVersion": spec.ProductVersion,
-		},
+		"Lockdown":    lockdownDict(spec),
 	}
 	plistBytes, err := plist.Marshal(mp, plist.BinaryFormat)
 	if err != nil {
@@ -512,4 +516,32 @@ func writePlainBlob(dir, id string, data []byte) error {
 		return err
 	}
 	return os.WriteFile(filepath.Join(sub, id), data, 0o600)
+}
+
+// lockdownDict builds Manifest.plist's Lockdown dict, omitting every field left zero.
+//
+// ONE HELPER FOR BOTH WRITERS. The encrypted and unencrypted paths each write their own
+// Manifest.plist, and a field added to one and forgotten in the other is a fixture that
+// silently tests less than it appears to on whichever path the author was not looking at.
+//
+// Omission is deliberate rather than incidental: these keys are optional in the real
+// format, so a zero value writing an EMPTY STRING would make "absent" unbuildable, and
+// absent is the case a reader is most likely to get wrong.
+func lockdownDict(spec Spec) map[string]any {
+	d := map[string]any{
+		"DeviceName":     spec.DeviceName,
+		"ProductVersion": spec.ProductVersion,
+	}
+	for k, v := range map[string]string{
+		"DeviceClass":    spec.DeviceClass,
+		"ProductType":    spec.ProductType,
+		"BuildVersion":   spec.BuildVersion,
+		"SerialNumber":   spec.SerialNumber,
+		"UniqueDeviceID": spec.UniqueDeviceID,
+	} {
+		if v != "" {
+			d[k] = v
+		}
+	}
+	return d
 }

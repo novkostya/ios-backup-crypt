@@ -57,11 +57,33 @@ type FileEntry struct {
 	MTime time.Time
 }
 
-// Info summarizes the backed-up device.
+// Info summarizes the backed-up device. Every field except FileCount comes from
+// Manifest.plist and is available BEFORE Unlock; see DeviceInfo.
 type Info struct {
 	DeviceName     string
-	ProductVersion string // iOS version
-	FileCount      int64  // rows in the Files table (0 until unlocked)
+	ProductVersion string // iOS version, e.g. "17.5.1"
+
+	// The rest of Manifest.plist's Lockdown dict. These cost nothing extra: the file is
+	// already read and parsed to find the keybag, and these fields were being discarded at
+	// the point of parse. A consumer that wants to tell two backups of one device apart —
+	// or to say "iPad" rather than guessing from a name — needed a second reader for data
+	// this library already had in hand.
+	DeviceClass string // "iPhone", "iPad", …
+	ProductType string // model identifier, e.g. "iPad13,4" — NOT a marketing name, and
+	// this library ships no mapping table for one
+	BuildVersion   string // iOS build, e.g. "21F90"
+	SerialNumber   string
+	UniqueDeviceID string
+
+	// FileCount is the number of rows in the Files table.
+	//
+	// READ FileCountKnown BEFORE READING THIS. The Files table lives in the encrypted
+	// Manifest.db, so the count is unavailable until Unlock — and a plain int64 reports
+	// "locked" and "genuinely empty" with the same zero. That ambiguity cannot be resolved
+	// by a caller, and a caller that renders it anyway says "0 files" about a perfectly good
+	// backup.
+	FileCount      int64
+	FileCountKnown bool
 }
 
 // Backup is an opened iOS backup directory. Open reads its Manifest.plist and keybag;
@@ -381,17 +403,29 @@ func (b *Backup) DecryptFile(fileID string, w io.Writer) error {
 	return nil
 }
 
-// DeviceInfo reports the device name and iOS version (from Manifest.plist, available
-// before unlocking) and the Files-table row count (0 until unlocked).
+// DeviceInfo reports what is known about the backed-up device.
+//
+// Everything except the file count comes from Manifest.plist and is available BEFORE
+// Unlock, because that file is not encrypted. The file count needs the decrypted index, so
+// it is reported as unknown until then — check Info.FileCountKnown rather than testing
+// FileCount against zero, which cannot distinguish "locked" from "empty".
 func (b *Backup) DeviceInfo() (Info, error) {
 	info := Info{
 		DeviceName:     b.manifest.Lockdown.DeviceName,
 		ProductVersion: b.manifest.Lockdown.ProductVersion,
+		DeviceClass:    b.manifest.Lockdown.DeviceClass,
+		ProductType:    b.manifest.Lockdown.ProductType,
+		BuildVersion:   b.manifest.Lockdown.BuildVersion,
+		SerialNumber:   b.manifest.Lockdown.SerialNumber,
+		UniqueDeviceID: b.manifest.Lockdown.UniqueDeviceID,
 	}
 	if b.db != nil {
 		if err := b.db.QueryRow("SELECT COUNT(*) FROM Files").Scan(&info.FileCount); err != nil {
 			return info, err
 		}
+		// Set ONLY after the query succeeds: a failed count must not leave a zero looking
+		// like an answer, which is the whole point of the flag.
+		info.FileCountKnown = true
 	}
 	return info, nil
 }
