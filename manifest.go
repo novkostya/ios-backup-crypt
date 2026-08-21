@@ -18,9 +18,18 @@ type manifestPlist struct {
 }
 
 // lockdown holds the device-identifying fields from Manifest.plist's Lockdown dict.
+//
+// These are read on the PRE-UNLOCK path — readManifestPlist runs in Open, before any key
+// exists — so every field here is available without the backup password. That is a property
+// of the format rather than a choice this library makes: Manifest.plist is not encrypted.
 type lockdown struct {
 	DeviceName     string `plist:"DeviceName"`
 	ProductVersion string `plist:"ProductVersion"`
+	DeviceClass    string `plist:"DeviceClass"`
+	ProductType    string `plist:"ProductType"`
+	BuildVersion   string `plist:"BuildVersion"`
+	SerialNumber   string `plist:"SerialNumber"`
+	UniqueDeviceID string `plist:"UniqueDeviceID"`
 }
 
 // readManifestPlist reads and decodes <dir>/Manifest.plist. The file is small metadata,
