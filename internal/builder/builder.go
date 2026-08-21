@@ -95,7 +95,13 @@ type Spec struct {
 	BuildVersion   string // → Lockdown.BuildVersion
 	SerialNumber   string // → Lockdown.SerialNumber
 	UniqueDeviceID string // → Lockdown.UniqueDeviceID
-	Files          []File
+
+	// Status and Info generate the OTHER TWO plists a real backup carries. Both are nil or
+	// zero by default, so an existing caller keeps getting exactly the two files it always
+	// got — a backup with neither is itself a state a reader must handle.
+	Status StatusInfo
+	Info   *DeviceExtras
+	Files  []File
 	// KDF work factors — kept small so tests are fast (real backups use DPIC ≈ 1e7).
 	// Zero values default to DPIC=4096, ITER=4096. Ignored when Unencrypted.
 	DPIC, ITER uint32
@@ -217,6 +223,12 @@ func Build(dir string, spec Spec) (*Result, error) {
 		return nil, err
 	}
 	if err := os.WriteFile(filepath.Join(dir, "Manifest.plist"), plistBytes, 0o600); err != nil {
+		return nil, err
+	}
+	if err := writeStatusPlist(dir, spec.Status); err != nil {
+		return nil, err
+	}
+	if err := writeInfoPlist(dir, spec); err != nil {
 		return nil, err
 	}
 
@@ -501,6 +513,12 @@ func buildUnencrypted(dir string, spec Spec) (*Result, error) {
 	if err := os.WriteFile(filepath.Join(dir, "Manifest.plist"), plistBytes, 0o600); err != nil {
 		return nil, err
 	}
+	if err := writeStatusPlist(dir, spec.Status); err != nil {
+		return nil, err
+	}
+	if err := writeInfoPlist(dir, spec); err != nil {
+		return nil, err
+	}
 
 	// Password is empty rather than DefaultPassword: there is nothing to unlock, and
 	// returning a password for a backup that takes none is the "field that silently
@@ -544,4 +562,140 @@ func lockdownDict(spec Spec) map[string]any {
 		}
 	}
 	return d
+}
+
+// Info.plist and Status.plist are the OTHER TWO plists a real backup carries, and until now
+// this generator wrote neither. Both are unencrypted, so a consumer can read them without a
+// password — which is exactly why a fixture needs to be able to produce them: the code paths
+// that read them are reachable on a LOCKED backup, and a generator that cannot build one
+// leaves that whole tier untestable.
+//
+// THE ON-DISK FORMATS ARE NOT THE SAME, and the fixture matches what iOS actually writes
+// rather than picking one for convenience: measured on two real backups (an iPad and an
+// iPhone), Info.plist is XML and Status.plist is binary, while Manifest.plist is binary.
+// A reader that only ever met this generator's output would otherwise never meet an XML
+// plist at all, and would pass its tests while failing on every real backup.
+
+// StatusInfo is Status.plist — six keys, 189 bytes on both real backups measured. Left
+// zero, Build writes no Status.plist at all, because "the file is missing" is a state a
+// reader has to handle and a fixture must be able to build.
+type StatusInfo struct {
+	BackupState   string // e.g. "new"
+	Date          time.Time
+	IsFullBackup  bool   // full vs incremental — a fact quince cannot show today
+	SnapshotState string // e.g. "finished"
+	UUID          string
+	Version       string // the backup FORMAT version, e.g. "3.3" — not the iOS version
+}
+
+// DeviceExtras is the part of Info.plist that is not already in Spec's Lockdown fields.
+//
+// IMEI, ICCID and PhoneNumber are present on a phone and absent on an iPad — measured — so
+// they are optional here for the same reason the Lockdown extras are: absent is a real state
+// and a fixture that could not build it would leave the branch untested.
+type DeviceExtras struct {
+	DisplayName           string
+	GUID                  string
+	TargetIdentifier      string
+	TargetType            string // e.g. "Device"
+	ITunesVersion         string
+	LastBackupDate        time.Time
+	InstalledApplications []string // bundle ids, the USER-INSTALLED list
+
+	IMEI        string
+	ICCID       string
+	PhoneNumber string
+}
+
+// writeStatusPlist writes Status.plist (binary, as iOS does). A zero StatusInfo writes
+// nothing — see StatusInfo.
+func writeStatusPlist(dir string, s StatusInfo) error {
+	if s.IsZero() {
+		return nil
+	}
+	m := map[string]any{
+		"BackupState":   s.BackupState,
+		"IsFullBackup":  s.IsFullBackup,
+		"SnapshotState": s.SnapshotState,
+		"UUID":          s.UUID,
+		"Version":       s.Version,
+	}
+	if !s.Date.IsZero() {
+		m["Date"] = s.Date
+	}
+	b, err := plist.Marshal(m, plist.BinaryFormat)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(dir, "Status.plist"), b, 0o600)
+}
+
+// writeInfoPlist writes Info.plist (XML, as iOS does). Nothing is written when the spec
+// asks for none, so "no Info.plist" stays buildable.
+//
+// The device fields are taken from Spec rather than duplicated in DeviceExtras: a real
+// Info.plist and a real Manifest.plist agree about the device, and a fixture that let them
+// disagree would invite a reader to prefer one arbitrarily and never notice.
+func writeInfoPlist(dir string, spec Spec) error {
+	e := spec.Info
+	if e == nil {
+		return nil
+	}
+	m := map[string]any{
+		"Device Name":     spec.DeviceName,
+		"Product Version": spec.ProductVersion,
+		"Target Type":     e.TargetType,
+	}
+	for k, v := range map[string]string{
+		"Display Name":      e.DisplayName,
+		"GUID":              e.GUID,
+		"Target Identifier": e.TargetIdentifier,
+		"iTunes Version":    e.ITunesVersion,
+		"Build Version":     spec.BuildVersion,
+		"Product Type":      spec.ProductType,
+		"Serial Number":     spec.SerialNumber,
+		"Unique Identifier": spec.UniqueDeviceID,
+		"IMEI":              e.IMEI,
+		"ICCID":             e.ICCID,
+		"Phone Number":      e.PhoneNumber,
+	} {
+		if v != "" {
+			m[k] = v
+		}
+	}
+	if !e.LastBackupDate.IsZero() {
+		m["Last Backup Date"] = e.LastBackupDate
+	}
+	if len(e.InstalledApplications) > 0 {
+		apps := make([]any, 0, len(e.InstalledApplications))
+		// Applications mirrors Installed Applications on a real backup — one entry per
+		// installed bundle id. The per-app value is metadata this library does not model,
+		// so it is written as an empty dict rather than invented.
+		perApp := map[string]any{}
+		for _, id := range e.InstalledApplications {
+			apps = append(apps, id)
+			perApp[id] = map[string]any{}
+		}
+		m["Installed Applications"] = apps
+		m["Applications"] = perApp
+	}
+	b, err := plist.Marshal(m, plist.XMLFormat)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(dir, "Info.plist"), b, 0o600)
+}
+
+// IsZero reports that nothing was set, so Build writes no Status.plist.
+//
+// Field by field rather than `s == StatusInfo{}`: struct equality on a time.Time compares
+// the monotonic reading too, which is not what "unset" means and is not a comparison the
+// time package wants anyone making.
+func (s StatusInfo) IsZero() bool {
+	return s.BackupState == "" &&
+		s.SnapshotState == "" &&
+		s.UUID == "" &&
+		s.Version == "" &&
+		!s.IsFullBackup &&
+		s.Date.IsZero()
 }
