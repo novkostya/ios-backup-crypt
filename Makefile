@@ -56,19 +56,32 @@ tc-go: preflight ## Ensure the Go toolchain image exists (builds only if missing
 tc-go-force: preflight ## Rebuild the Go toolchain image (run after a versions.env / Dockerfile change)
 	$(RUNTIME) build $(BUILD_ARGS) --target toolchain-go -t $(TC_GO) -f deploy/Dockerfile .
 
+# EVERY MODULE IN THIS REPOSITORY, and the one list that says so.
+#
+# `./...` STOPS AT A MODULE BOUNDARY. `fixture/` is a separate module with its own `go.mod`, so
+# a root-level `go test ./...` / `go vet ./...` / `go mod tidy` sees none of it — and reports
+# success, because there is nothing wrong with what it did look at. `gofmt -l .` is the odd one
+# out: it walks DIRECTORIES rather than modules, so it recurses the whole tree regardless. That
+# asymmetry is what makes this easy to get wrong — one check keeps working while the others
+# quietly narrow.
+#
+# A VARIABLE RATHER THAN THE LIST REPEATED IN EACH TARGET. It was written out once, in `gates`,
+# and the two targets that did not have it were both wrong: `test` ran the root module only
+# (#20), and `tidy` tidied the root `go.mod` only — which is how `fixture/go.mod` came to
+# require a root version two releases behind its own code, the defect `#17` fixed and
+# `fixture/v0.1.0` had already shipped once. Adding a third module should cost one edit here.
+MODULES = . ./fixture
+
 .PHONY: gates
 gates: tc-go ## Run the gate: gofmt -l (empty) + go vet + golangci-lint + go test -race
-# EVERY MODULE, NOT EVERY PACKAGE. `./...` stops at a module boundary, so the fixture
-# module's packages are invisible to a root-level `go test ./...` — a gate that looked
-# green while testing none of it. `gofmt -l .` DOES recurse the whole tree (it walks
-# directories, not modules), which is exactly the asymmetry that makes this easy to get
-# wrong: one of the four checks would have kept working and the other three would not.
+# The module loop is MODULES, above — `./...` would see the root module only. `golangci-lint`
+# is per-module too and is inside the loop for that reason.
 	$(RUN) -w /src \
 	  -v $(GO_BUILD_VOL):/root/.cache/go-build -v $(GO_MOD_VOL):/go/pkg/mod \
 	  -e CGO_ENABLED=1 -e GOTOOLCHAIN=local $(TC_GO) sh -euc '\
 	    unformatted=$$(gofmt -l .); \
 	    if [ -n "$$unformatted" ]; then echo "gofmt needs to run on:"; echo "$$unformatted"; exit 1; fi; \
-	    for mod in . ./fixture; do \
+	    for mod in $(MODULES); do \
 	      echo "=== module $$mod ==="; \
 	      ( cd "$$mod" && go vet ./... && golangci-lint run && go test -race ./... ); \
 	    done'
@@ -151,16 +164,24 @@ verify-real: tc-go ## Decrypt every file to /dev/null — full decrypt + tally w
 	  $(TC_GO) sh -euc 'go test -v -count=1 -timeout 0 -run TestRealBackupExtractAll ./'
 
 .PHONY: test
-test: tc-go ## Just the tests (go test -race), no lint — for a fast inner loop
+test: tc-go ## Just the tests (go test -race) in EVERY module, no lint — for a fast inner loop
 	$(RUN) -w /src \
 	  -v $(GO_BUILD_VOL):/root/.cache/go-build -v $(GO_MOD_VOL):/go/pkg/mod \
-	  -e CGO_ENABLED=1 -e GOTOOLCHAIN=local $(TC_GO) sh -euc 'go test -race ./...'
+	  -e CGO_ENABLED=1 -e GOTOOLCHAIN=local $(TC_GO) sh -euc '\
+	    for mod in $(MODULES); do \
+	      echo "=== module $$mod ==="; \
+	      ( cd "$$mod" && go test -race ./... ); \
+	    done'
 
 .PHONY: tidy
-tidy: tc-go ## Run `go mod tidy` inside the toolchain container
+tidy: tc-go ## Run `go mod tidy` in EVERY module, inside the toolchain container
 	$(RUN) -w /src \
 	  -v $(GO_BUILD_VOL):/root/.cache/go-build -v $(GO_MOD_VOL):/go/pkg/mod \
-	  -e GOTOOLCHAIN=local $(TC_GO) sh -euc 'go mod tidy'
+	  -e GOTOOLCHAIN=local $(TC_GO) sh -euc '\
+	    for mod in $(MODULES); do \
+	      echo "=== module $$mod ==="; \
+	      ( cd "$$mod" && go mod tidy ); \
+	    done'
 
 .PHONY: clean
 clean: ## Drop cache volumes and the locally-built toolchain images
