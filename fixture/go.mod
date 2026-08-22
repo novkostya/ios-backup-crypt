@@ -31,7 +31,7 @@ go 1.25.0
 //
 // Bump it in the same change that adds anything to the generator. The gate cannot catch
 // this: `make gates` runs inside the replace, which is the whole problem.
-require github.com/novkostya/ios-backup-crypt v0.2.0
+require github.com/novkostya/ios-backup-crypt v0.5.0
 
 require (
 	github.com/dustin/go-humanize v1.0.1 // indirect
