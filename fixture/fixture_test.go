@@ -89,16 +89,34 @@ func TestBuildHonorsASuppliedPassword(t *testing.T) {
 // is made of, which is the edit that was forgotten. This test is what makes the claim hold:
 // it names every type by its `fixture.`-qualified alias, so a field of an unexported type
 // fails to compile HERE rather than in somebody else's repository.
+//
+// EVERY EXPORTED FIELD IS SET, including the ones whose types are builtins and could not
+// possibly fail. That is deliberate: this is a SNAPSHOT of the whole surface, so a reader
+// adding a field can see at a glance whether it is covered, and the diff that adds one to
+// Spec without touching this test is visibly incomplete.
+//
+// WHAT IT DOES NOT DO, stated so nobody trusts it further than it goes: a NEW field of a new
+// unexported type does not break this test until somebody sets it here. Go has no
+// exhaustiveness check for struct literals, and reflection cannot help — an alias does not
+// change type identity, so `reflect` reports `internal/builder` as the package for the
+// aliased types and the correct ones are indistinguishable from the broken ones. If that
+// gap is worth closing mechanically, `exhaustruct` on this file is the tool.
 func TestEveryTypeSpecNeedsIsNameableByAConsumer(t *testing.T) {
 	dir := t.TempDir()
 
-	// Composite literals throughout, with no unsafe, no reflection and no type inference
+	// Composite literals throughout, with no `unsafe`, no reflection and no type-inference
 	// tricks — if any of these names is missing, this file does not build.
 	spec := fixture.Spec{
-		Unencrypted:    true,
+		Password:       "test",
 		DeviceName:     "Study Tablet",
 		ProductVersion: "17.5.1",
 		DeviceClass:    "iPad",
+		ProductType:    "iPadT9,9",
+		BuildVersion:   "21F9000",
+		SerialNumber:   "SERIALINVENTED1",
+		UniqueDeviceID: "00009999-000A9999A99A999A",
+		DPIC:           4096,
+		ITER:           4096,
 		Status: fixture.StatusInfo{
 			BackupState:   "new",
 			Date:          time.Date(2026, 3, 4, 5, 6, 7, 0, time.UTC),
@@ -110,24 +128,46 @@ func TestEveryTypeSpecNeedsIsNameableByAConsumer(t *testing.T) {
 		Info: &fixture.DeviceExtras{
 			DisplayName:           "Study Tablet",
 			GUID:                  "GUIDINVENTED0001",
+			TargetIdentifier:      "00009999-000A9999A99A999A",
 			TargetType:            "Device",
 			ITunesVersion:         "12.12.9",
 			LastBackupDate:        time.Date(2026, 3, 4, 5, 6, 7, 0, time.UTC),
 			InstalledApplications: []string{"com.example.notes", "com.example.reader"},
 			IMEI:                  "990000000000001",
+			ICCID:                 "89000000000000000001",
+			PhoneNumber:           "+15550000001",
 		},
-		Files: []fixture.File{
-			{Domain: "HomeDomain", RelativePath: "Library/note.txt", Data: []byte("x")},
-		},
+		Files: []fixture.File{{
+			Domain:       "HomeDomain",
+			RelativePath: "Library/note.txt",
+			Flags:        1,
+			Data:         []byte("x"),
+			MTime:        time.Date(2026, 3, 4, 5, 6, 7, 0, time.UTC),
+			BadRecord:    false,
+		}},
 	}
 
-	if _, err := fixture.Build(dir, spec); err != nil {
+	res, err := fixture.Build(dir, spec)
+	if err != nil {
 		t.Fatalf("Build: %v", err)
+	}
+
+	// Result and WrittenFile are the other half of the surface — named here so the same
+	// compile covers what Build HANDS BACK as well as what it takes.
+	var written fixture.WrittenFile
+	if len(res.Files) > 0 {
+		written = res.Files[0]
+	}
+	if written.FileID == "" || written.Domain != "HomeDomain" || written.RelativePath == "" {
+		t.Errorf("WrittenFile = %+v, want the row that was placed", written)
+	}
+	if written.Flags != 1 {
+		t.Errorf("WrittenFile.Flags = %d, want 1", written.Flags)
 	}
 
 	// AND THE PLISTS ARE ACTUALLY WRITTEN. Naming the types is the compile-time half; this
 	// is the half that says the fields did something, so the test cannot pass on a Spec
-	// whose two newest fields are silently ignored.
+	// whose two newest fields are accepted and silently ignored.
 	for _, name := range []string{"Status.plist", "Info.plist", "Manifest.plist"} {
 		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
 			t.Errorf("%s was not written: %v", name, err)
