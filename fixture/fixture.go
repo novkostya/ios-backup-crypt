@@ -33,6 +33,14 @@ const DefaultPassword = builder.DefaultPassword
 // The exported surface is ALIASES rather than new types, so a value built here is the same
 // value the implementation uses — no conversion, no shadow struct to keep in step, and a
 // field added to the generator appears here without a second edit that could be forgotten.
+//
+// THAT HELD FOR THE FIELD AND NOT FOR ITS TYPE, WHICH IS THE EDIT THAT WAS FORGOTTEN (#18).
+// v0.2.0 shipped Spec.Status and Spec.Info as fields whose types had no alias here, so a
+// consumer could not construct either — and Spec.Info, being a pointer, could not even be
+// allocated. Nothing in this repository noticed: the root module reaches internal/builder
+// directly and this module builds under a `replace`, so the consumer view was compiled
+// nowhere. TestEveryTypeSpecNeedsIsNameableByAConsumer is now that compile, and a new field
+// of an unexported type fails there rather than in somebody else's repository.
 type (
 	// File is one row to place in the fixture's Files table.
 	File = builder.File
@@ -40,6 +48,10 @@ type (
 	Spec = builder.Spec
 	// WrittenFile records a row placed in the Files table, including its computed fileID.
 	WrittenFile = builder.WrittenFile
+	// StatusInfo describes the Status.plist to generate. Zero writes no file.
+	StatusInfo = builder.StatusInfo
+	// DeviceExtras describes the Info.plist to generate. Nil writes no file.
+	DeviceExtras = builder.DeviceExtras
 	// Result reports what Build wrote.
 	Result = builder.Result
 )
